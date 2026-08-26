@@ -1,0 +1,31 @@
+# Representative Medieval Factions 5 installation from before config-version adoption.
+version: 5.9.0-patriam.0
+language: en-US
+database:
+  url: 'jdbc:h2:./historical_medieval_factions;MODE=MYSQL'
+  dialect: H2
+  username: historical-admin
+  password: 'historical-database-secret'
+players:
+  initialPower: 7
+  maxPower: 28
+  hoursToReachMaxPower: 18
+factions:
+  maxMembers: 42
+  blockedClaimWorlds:
+  - old_world
+  defaults:
+    flags:
+      alliesCanInteractWithLand: true
+      heraldry-extension: enabled
+  integration-extension:
+    mode: historical
+    nested:
+      retained: true
+dpc-api:
+  enabled: true
+  key: 'historical-dpc-secret'
+  server-id: old-realm
+third-party-hooks:
+  audit:
+    enabled: true

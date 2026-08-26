@@ -34,6 +34,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`/f version`** (also `ver`, `about`), which says which build this is and that a stock jar will not
   run Patriam's plugins. The version string itself is marked `-patriam`, because a fork reporting the
   same string as upstream is how somebody spends an hour debugging the wrong jar.
+- **Configuration schema 1**, with template-first adoption of unversioned MF5 files, strict physical
+  YAML checks, exact owner-only backups and atomic replacement. Startup now validates and binds one
+  exact config generation before opening the database; MF4 keeps its separate historical importer,
+  and `/f dpc` writes refuse concurrent operator edits while retaining the last-known-good runtime.
 - Migrations **V900** and **V901**, recording a faction's head and when they took the seat. Numbered
   from 900 so upstream keeps 9 through 899: two migrations sharing a version makes Flyway refuse to
   start, and renaming one after a server has applied it means editing `schema_history` on live data.

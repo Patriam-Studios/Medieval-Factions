@@ -6,12 +6,12 @@ import com.dansplugins.factionsystem.lang.Language
 import com.dansplugins.factionsystem.service.Services
 import net.md_5.bungee.api.ChatColor
 import org.bukkit.Server
-import org.bukkit.configuration.file.FileConfiguration
 import org.bukkit.scheduler.BukkitScheduler
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import org.mockito.ArgumentMatchers.anyMap
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
@@ -25,7 +25,6 @@ class MfFactionDpcCommandTest {
     private lateinit var fixture: TestUtils.CommandTestFixture
     private lateinit var plugin: MedievalFactions
     private lateinit var language: Language
-    private lateinit var config: FileConfiguration
     private lateinit var uut: MfFactionDpcCommand
 
     @BeforeEach
@@ -35,7 +34,7 @@ class MfFactionDpcCommandTest {
         mockLanguageSystem()
         mockScheduler()
         mockLogger()
-        mockConfig()
+        `when`(plugin.updateOperatorConfig(anyMap())).thenReturn(true)
         mockServices()
         uut = MfFactionDpcCommand(plugin)
     }
@@ -76,8 +75,7 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("optin"))
 
         assertTrue(result)
-        verify(config).set("dpc-api.enabled", true)
-        verify(plugin).saveConfig()
+        verify(plugin).updateOperatorConfig(mapOf("dpc-api.enabled" to true))
         verify(sender).sendMessage("${ChatColor.GREEN}Opted in")
     }
 
@@ -91,9 +89,23 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("optout"))
 
         assertTrue(result)
-        verify(config).set("dpc-api.enabled", false)
-        verify(plugin).saveConfig()
+        verify(plugin).updateOperatorConfig(mapOf("dpc-api.enabled" to false))
         verify(sender).sendMessage("${ChatColor.GREEN}Opted out")
+    }
+
+    @Test
+    fun testOnCommand_persistenceFailureDoesNotReportSuccess() {
+        val sender = fixture.sender
+        val command = fixture.command
+        `when`(sender.hasPermission("mf.dpc")).thenReturn(true)
+        `when`(plugin.updateOperatorConfig(mapOf("dpc-api.enabled" to true))).thenReturn(false)
+        `when`(language["CommandFactionDpcSaveFailed"]).thenReturn("Safe write refused")
+
+        val result = uut.onCommand(sender, command, "label", arrayOf("optin"))
+
+        assertTrue(result)
+        verify(sender).sendMessage("${ChatColor.RED}Safe write refused")
+        verify(sender, never()).sendMessage("${ChatColor.GREEN}Opted in")
     }
 
     @Test
@@ -106,8 +118,7 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("reminder", "on"))
 
         assertTrue(result)
-        verify(config).set("dpc-api.login-reminder", true)
-        verify(plugin).saveConfig()
+        verify(plugin).updateOperatorConfig(mapOf("dpc-api.login-reminder" to true))
         verify(sender).sendMessage("${ChatColor.GREEN}Reminder on")
     }
 
@@ -121,8 +132,7 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("reminder", "off"))
 
         assertTrue(result)
-        verify(config).set("dpc-api.login-reminder", false)
-        verify(plugin).saveConfig()
+        verify(plugin).updateOperatorConfig(mapOf("dpc-api.login-reminder" to false))
         verify(sender).sendMessage("${ChatColor.GREEN}Reminder off")
     }
 
@@ -136,8 +146,7 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("shareip", "on"))
 
         assertTrue(result)
-        verify(config).set("dpc-api.share-server-ip", true)
-        verify(plugin).saveConfig()
+        verify(plugin).updateOperatorConfig(mapOf("dpc-api.share-server-ip" to true))
         verify(sender).sendMessage("${ChatColor.GREEN}Share IP on")
     }
 
@@ -151,8 +160,7 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("shareip", "off"))
 
         assertTrue(result)
-        verify(config).set("dpc-api.share-server-ip", false)
-        verify(plugin).saveConfig()
+        verify(plugin).updateOperatorConfig(mapOf("dpc-api.share-server-ip" to false))
         verify(sender).sendMessage("${ChatColor.GREEN}Share IP off")
     }
 
@@ -166,8 +174,7 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("discord", "https://discord.gg/test"))
 
         assertTrue(result)
-        verify(config).set("dpc-api.discord-link", "https://discord.gg/test")
-        verify(plugin).saveConfig()
+        verify(plugin).updateOperatorConfig(mapOf("dpc-api.discord-link" to "https://discord.gg/test"))
         verify(sender).sendMessage("${ChatColor.GREEN}Discord set")
     }
 
@@ -181,8 +188,7 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("discord", "clear"))
 
         assertTrue(result)
-        verify(config).set("dpc-api.discord-link", "")
-        verify(plugin).saveConfig()
+        verify(plugin).updateOperatorConfig(mapOf("dpc-api.discord-link" to ""))
         verify(sender).sendMessage("${ChatColor.GREEN}Discord cleared")
     }
 
@@ -196,8 +202,7 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("discord", "https://example.com/not-discord"))
 
         assertTrue(result)
-        verify(config, never()).set(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any())
-        verify(plugin, never()).saveConfig()
+        verify(plugin, never()).updateOperatorConfig(anyMap())
         verify(sender).sendMessage("${ChatColor.RED}Invalid link")
     }
 
@@ -211,8 +216,7 @@ class MfFactionDpcCommandTest {
         val result = uut.onCommand(sender, command, "label", arrayOf("discord", "https://discord.com/invite/test"))
 
         assertTrue(result)
-        verify(config).set("dpc-api.discord-link", "https://discord.com/invite/test")
-        verify(plugin).saveConfig()
+        verify(plugin).updateOperatorConfig(mapOf("dpc-api.discord-link" to "https://discord.com/invite/test"))
         verify(sender).sendMessage("${ChatColor.GREEN}Discord set")
     }
 
@@ -265,10 +269,5 @@ class MfFactionDpcCommandTest {
     private fun mockLogger() {
         val logger = mock(Logger::class.java)
         `when`(plugin.logger).thenReturn(logger)
-    }
-
-    private fun mockConfig() {
-        config = mock(FileConfiguration::class.java)
-        `when`(plugin.config).thenReturn(config)
     }
 }

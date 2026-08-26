@@ -1,3 +1,5 @@
+# Independent operator-configuration schema. Do not change this to the plugin/JAR version.
+config-version: 1
 version: @version@
 language: en-US
 database:

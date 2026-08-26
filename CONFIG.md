@@ -3,6 +3,7 @@
 This document provides detailed information about all configuration options available in Medieval Factions.
 
 ## Table of Contents
+- [Configuration Schema and Upgrades](#configuration-schema-and-upgrades)
 - [General Settings](#general-settings)
 - [Database Configuration](#database-configuration)
 - [Player Power System](#player-power-system)
@@ -16,12 +17,41 @@ This document provides detailed information about all configuration options avai
 - [Gates](#gates)
 - [Developer Options](#developer-options)
 
+## Configuration Schema and Upgrades
+
+`config-version` is the operator-configuration schema, independent of the plugin/JAR `version` and
+the Flyway database schema. The supported schema is currently `1`. A valid MF5-era `config.yml`
+without the marker is schema 0 and is upgraded automatically: Medieval Factions rebuilds it in the
+latest bundled order, overlays explicit operator values and credentials, and retains unknown
+extension keys after the known keys in their nearest section. The schema is intentionally open so
+integration extensions are accepted; known bundled paths still have their section and value types
+validated.
+
+Before migration, the exact installed bytes are copied to a same-directory, owner-only
+`config.yml.v0.bak` (or a numbered collision-safe variant). Replacement is atomic and refuses a
+concurrent edit. Blank, null, duplicate, quoted, tagged, malformed, negative, or future markers—and
+any YAML null elsewhere—leave the installed file unchanged and block startup before database or
+game state is loaded. Startup and `/f version` report plugin version, supported/source/installed/active schema,
+and state without printing values. Configuration changes made by `/f dpc` use the same exact-byte
+compare-and-swap protection; a failed write keeps the last-known-good runtime settings.
+
+The older `version: v4.*` format is not treated as ordinary schema 0. It continues through the
+existing MF4 backup/import process. Restart the plugin after manual `config.yml` edits; there is no
+partial in-place reload of database, language, listener, and scheduler settings.
+
 ## General Settings
+
+### `config-version`
+**Type:** Plain, unquoted integer
+
+**Default:** `1`
+
+**Description:** Configuration schema used for safe automatic upgrades. Do not set it to the plugin version.
 
 ### `version`
 **Type:** String  
 **Default:** `@version@` (auto-generated)  
-**Description:** Plugin version number. This is automatically set during build and should not be modified manually.
+**Description:** Informational plugin version placed in newly generated files. It is not the configuration schema.
 
 ### `language`
 **Type:** String  

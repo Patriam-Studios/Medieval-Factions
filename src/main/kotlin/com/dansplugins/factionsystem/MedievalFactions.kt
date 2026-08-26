@@ -14,6 +14,7 @@ import com.dansplugins.factionsystem.command.gate.MfGateCommand
 import com.dansplugins.factionsystem.command.lock.MfLockCommand
 import com.dansplugins.factionsystem.command.power.MfPowerCommand
 import com.dansplugins.factionsystem.command.unlock.MfUnlockCommand
+import com.dansplugins.factionsystem.config.ConfigLifecycle
 import com.dansplugins.factionsystem.dpc.MfDpcApiService
 import com.dansplugins.factionsystem.duel.JooqMfDuelInviteRepository
 import com.dansplugins.factionsystem.duel.JooqMfDuelRepository
@@ -102,12 +103,14 @@ import org.bstats.bukkit.Metrics
 import org.bstats.charts.SimplePie
 import org.bukkit.NamespacedKey
 import org.bukkit.boss.KeyedBossBar
+import org.bukkit.configuration.file.FileConfiguration
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
 import org.flywaydb.core.Flyway
 import org.jooq.SQLDialect
 import org.jooq.conf.Settings
 import org.jooq.impl.DSL
+import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalTime
@@ -119,6 +122,14 @@ import kotlin.math.roundToInt
 class MedievalFactions : JavaPlugin() {
 
     private lateinit var dataSource: DataSource
+
+    @Volatile
+    private var activeConfigSnapshot: ConfigLifecycle.Snapshot? = null
+
+    @Volatile
+    private var lastConfigResult: ConfigLifecycle.Result? = null
+
+    private lateinit var bundledConfigYaml: String
 
     lateinit var flags: MfFlags
     lateinit var factionPermissions: MfFactionPermissions
@@ -138,15 +149,28 @@ class MedievalFactions : JavaPlugin() {
 
     lateinit var language: Language
 
+    /** Every consumer sees the one exact generation validated before startup. */
+    override fun getConfig(): FileConfiguration =
+        activeConfigSnapshot?.configuration() ?: super.getConfig()
+
     override fun onEnable() {
+        bundledConfigYaml = getResource("config.yml")?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }
+            ?: run {
+                logger.severe("The plugin jar does not contain config.yml; startup is blocked.")
+                server.pluginManager.disablePlugin(this)
+                return
+            }
+        val configFile = dataFolder.toPath().resolve("config.yml")
         val migrator = MfLegacyDataMigrator(this)
-        if (config.getString("version")?.startsWith("v4.") == true) {
+        if (ConfigLifecycle.isMf4Legacy(configFile)) {
             migrator.backup()
-            saveDefaultConfig()
-            reloadConfig()
-            config.options().copyDefaults(true)
-            config.set("migrateMf4", true)
-            saveConfig()
+            val fresh = ConfigLifecycle.prepare(configFile, bundledConfigYaml)
+            if (!activatePreparedConfig(fresh)) return
+            if (!updateOperatorConfig(mapOf("migrateMf4" to true))) {
+                logger.severe("The MF4 import marker could not be persisted safely; startup is blocked.")
+                server.pluginManager.disablePlugin(this)
+                return
+            }
             logger.warning("Shutting down the server due to Medieval Factions 4 migration.")
             logger.warning("If you have a database, please configure it before starting the server again.")
             logger.warning("Otherwise, simply start your server again to begin migration.")
@@ -154,10 +178,7 @@ class MedievalFactions : JavaPlugin() {
             return
         }
 
-        saveDefaultConfig()
-        config.options().copyDefaults(true)
-        config.set("version", description.version)
-        saveConfig()
+        if (!activatePreparedConfig(ConfigLifecycle.prepare(configFile, bundledConfigYaml))) return
 
         language = Language(this, config.getString("language") ?: "en-US")
 
@@ -342,8 +363,9 @@ class MedievalFactions : JavaPlugin() {
 
         if (config.getBoolean("migrateMf4")) {
             migrator.migrate()
-            config.set("migrateMf4", null)
-            saveConfig()
+            check(updateOperatorConfig(mapOf("migrateMf4" to null))) {
+                "MF4 import completed, but its completion marker could not be persisted safely"
+            }
         }
 
         if (server.pluginManager.getPlugin("PlaceholderAPI") != null) {
@@ -533,6 +555,65 @@ class MedievalFactions : JavaPlugin() {
             syncIntervalTicks,
             syncIntervalTicks
         )
+    }
+
+    /**
+     * Publishes a small plugin-owned edit only if the physical file is still the active generation.
+     * A refused write leaves both runtime configuration and the operator's newer bytes untouched.
+     */
+    @Synchronized
+    internal fun updateOperatorConfig(updates: Map<String, Any?>): Boolean {
+        val active = activeConfigSnapshot ?: return false
+        val result = ConfigLifecycle.update(
+            dataFolder.toPath().resolve("config.yml"),
+            bundledConfigYaml,
+            active,
+            updates
+        )
+        lastConfigResult = result
+        if (!result.compatible()) {
+            logger.severe(
+                "Config update blocked: ${result.detail()}. " +
+                    "Runtime remains on last-known-good schema v${ConfigLifecycle.CURRENT_VERSION}."
+            )
+            return false
+        }
+        activeConfigSnapshot = result.snapshot()
+        return true
+    }
+
+    internal fun configSchemaStatus(): String {
+        val result = lastConfigResult
+            ?: return "supported v${ConfigLifecycle.CURRENT_VERSION}, source unknown, installed unknown, active none, state unavailable"
+        val source = if (result.sourceVersion() < 0) "unknown" else "v${result.sourceVersion()}"
+        val installed = if (result.compatible()) "v${result.installedVersion()}" else "unknown"
+        val active = if (activeConfigSnapshot == null) "none" else "v${ConfigLifecycle.CURRENT_VERSION}"
+        return "supported v${ConfigLifecycle.CURRENT_VERSION}, source $source, installed $installed, " +
+            "active $active, state ${result.state()}"
+    }
+
+    internal fun configLifecycleResult(): ConfigLifecycle.Result? = lastConfigResult
+
+    private fun activatePreparedConfig(result: ConfigLifecycle.Result): Boolean {
+        lastConfigResult = result
+        val source = if (result.sourceVersion() < 0) "unknown" else "v${result.sourceVersion()}"
+        val installed = when {
+            result.compatible() -> "v${result.installedVersion()}"
+            result.sourceVersion() >= 0 -> "v${result.sourceVersion()}"
+            else -> "unavailable"
+        }
+        val summary =
+            "Medieval-Factions plugin ${description.version}, config supported v${ConfigLifecycle.CURRENT_VERSION}, " +
+                "source $source, installed $installed, state ${result.state()}."
+        if (!result.compatible()) {
+            logger.severe("$summary Startup blocked: ${result.detail()}.")
+            server.pluginManager.disablePlugin(this)
+            return false
+        }
+        activeConfigSnapshot = result.snapshot()
+        logger.info("$summary ${result.detail()}.")
+        result.backup()?.let { logger.info("A byte-identical owner-only migration backup was created as ${it.fileName}.") }
+        return true
     }
 
     internal fun onPowerCycle(

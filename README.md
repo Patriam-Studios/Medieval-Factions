@@ -12,6 +12,13 @@
 > database migrations are numbered from **900**, leaving 9 through 899 to upstream. Once they have
 > been applied, going back to a stock build is not supported.
 >
+> Operator configuration uses an independent top-level `config-version`. Existing MF5-era files
+> without it are schema 0 and are upgraded automatically from the current bundled template, so new
+> defaults keep their documented positions while explicit values, credentials, and extension keys
+> are retained. A byte-identical owner-only backup is made first. Ambiguous/future schemas and YAML
+> nulls block startup before the database is opened. MF4 files remain on their separate historical
+> import path.
+>
 > Everything below this box is upstream's README.
 
 

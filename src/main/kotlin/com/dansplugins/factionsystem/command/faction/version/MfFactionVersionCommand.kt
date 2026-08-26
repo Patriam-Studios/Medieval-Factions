@@ -52,6 +52,7 @@ class MfFactionVersionCommand(private val plugin: MedievalFactions) : CommandExe
         sender.sendMessage("$DARK_GRAY$STRIKETHROUGH$RULE")
         sender.sendMessage("$YELLOW${plugin.language["CommandFactionVersionTitle"]}")
         sender.sendMessage("$GREEN${plugin.language["CommandFactionVersionVersion", value(version)]}")
+        sender.sendMessage("$GREEN${plugin.language["CommandFactionVersionConfig", value(plugin.configSchemaStatus())]}")
         if (marked) {
             sender.sendMessage("$GREEN${plugin.language["CommandFactionVersionUpstream", value(version.substringBefore(FORK_MARKER))]}")
             sender.sendMessage("$YELLOW${plugin.language["CommandFactionVersionForkNotice"]}")

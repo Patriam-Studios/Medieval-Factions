@@ -6,6 +6,7 @@ import com.dansplugins.factionsystem.area.MfChunkPosition
 import com.dansplugins.factionsystem.area.MfCuboidArea
 import com.dansplugins.factionsystem.area.MfPosition
 import com.dansplugins.factionsystem.claim.MfClaimedChunk
+import com.dansplugins.factionsystem.config.ConfigLifecycle
 import com.dansplugins.factionsystem.faction.MfFaction
 import com.dansplugins.factionsystem.faction.MfFactionId
 import com.dansplugins.factionsystem.faction.MfFactionMember
@@ -29,8 +30,6 @@ import dev.forkhandles.result4k.onFailure
 import org.bukkit.Material
 import org.bukkit.configuration.file.YamlConfiguration
 import java.io.File
-import java.time.Instant
-import java.time.format.DateTimeFormatter.ISO_INSTANT
 import java.util.logging.Level.SEVERE
 import kotlin.math.roundToInt
 
@@ -58,15 +57,26 @@ class MfLegacyDataMigrator(private val plugin: MedievalFactions) {
     }
 
     private fun backupOldFiles(backupFolder: File) {
-        val files = plugin.dataFolder.listFiles() ?: return
+        val files = plugin.dataFolder.listFiles()
+            ?.filterNot { it.canonicalFile == backupFolder.canonicalFile }
+            ?: return
         plugin.logger.info("Backing up old files to \"${backupFolder.path}\"...")
         val startTime = System.currentTimeMillis()
         if (backupFolder.exists()) {
-            backupFolder.renameTo(File("mf4_backup_${ISO_INSTANT.format(Instant.ofEpochMilli(backupFolder.lastModified()))}"))
+            check(
+                backupFolder.renameTo(
+                    File(plugin.dataFolder, "mf4_backup_${backupFolder.lastModified()}")
+                )
+            ) { "Existing MF4 backup could not be moved aside" }
         }
-        backupFolder.mkdirs()
+        check(backupFolder.mkdirs()) { "The MF4 backup directory could not be created" }
         files.forEach { file ->
-            file.renameTo(File(backupFolder, plugin.dataFolder.toURI().relativize(file.toURI()).path))
+            if (!file.exists()) return@forEach
+            val target = File(backupFolder, plugin.dataFolder.toURI().relativize(file.toURI()).path)
+            check(file.renameTo(target)) { "An MF4 data file could not be moved into the backup" }
+            if (target.name == "config.yml") {
+                ConfigLifecycle.restrictToOwner(target.toPath())
+            }
         }
         plugin.logger.info("Backup complete (${System.currentTimeMillis() - startTime}ms)")
     }
@@ -75,28 +85,35 @@ class MfLegacyDataMigrator(private val plugin: MedievalFactions) {
         plugin.logger.info("Migrating config settings...")
         val startTime = System.currentTimeMillis()
         val oldConfig = YamlConfiguration.loadConfiguration(oldConfigFile)
-        plugin.config.set("players.maxPower", oldConfig.getDouble("initialMaxPowerLevel"))
-        plugin.config.set("players.initialPower", oldConfig.getDouble("initialPowerLevel"))
-        plugin.config.set("factions.mobsSpawnInFactionTerritory", oldConfig.getBoolean("mobsSpawnInFactionTerritory"))
-        plugin.config.set("players.hoursToReachMaxPower", ((oldConfig.getDouble("initialMaxPowerLevel") / oldConfig.getDouble("powerIncreaseAmount")) * (oldConfig.getDouble("minutesBetweenPowerIncreases") / 60.0)).roundToInt())
-        plugin.config.set("factions.laddersPlaceableInEnemyFactionTerritory", oldConfig.getBoolean("laddersPlaceableInEnemyFactionTerritory"))
-        plugin.config.set("pvp.warRequiredForPlayersOfDifferentFactions", oldConfig.getBoolean("warsRequiredForPVP"))
-        plugin.config.set("factions.maxNameLength", oldConfig.getString("factionMaxNameLength"))
-        plugin.config.set("gates.maxPerFaction", oldConfig.getInt("factionMaxNumberGates"))
-        plugin.config.set("gates.maxBlocks", oldConfig.getInt("factionMaxGateArea"))
-        plugin.config.set("factions.zeroPowerFactionsGetDisbanded", oldConfig.getBoolean("zeroPowerFactionsGetDisbanded"))
-        plugin.config.set("factions.vassalPowerContributionMultiplier", oldConfig.getDouble("vassalContributionPercentageMultiplier"))
-        plugin.config.set("factions.nonMembersCanInteractWithDoors", oldConfig.getBoolean("nonMembersCanInteractWithDoors"))
-        plugin.config.set("chat.enableDefaultChatFormatting", oldConfig.getBoolean("playersChatWithPrefixes"))
-        plugin.config.set("factions.maxClaimRadius", oldConfig.getBoolean("maxClaimRadius"))
-        plugin.config.set("language", oldConfig.getString("languageid"))
-        plugin.config.set("factions.titleTerritoryIndicator", oldConfig.getBoolean("territoryAlertPopUp"))
-        plugin.config.set("factions.actionBarTerritoryIndicator", oldConfig.getBoolean("territoryIndicatorActionbar"))
-        plugin.config.set("factions.allowNeutrality", oldConfig.getBoolean("allowNeutrality"))
-        plugin.config.set("factions.limitLand", oldConfig.getBoolean("limitLand"))
-        plugin.config.set("players.powerLostOnDeath", oldConfig.getDouble("powerLostOnDeath"))
-        plugin.config.set("players.powerGainedOnKill", oldConfig.getDouble("powerGainedOnKill"))
-        plugin.saveConfig()
+        val updates = mapOf<String, Any?>(
+            "players.maxPower" to oldConfig.getDouble("initialMaxPowerLevel"),
+            "players.initialPower" to oldConfig.getDouble("initialPowerLevel"),
+            "factions.mobsSpawnInFactionTerritory" to oldConfig.getBoolean("mobsSpawnInFactionTerritory"),
+            "players.hoursToReachMaxPower" to (
+                (oldConfig.getDouble("initialMaxPowerLevel") / oldConfig.getDouble("powerIncreaseAmount")) *
+                    (oldConfig.getDouble("minutesBetweenPowerIncreases") / 60.0)
+                ).roundToInt(),
+            "factions.laddersPlaceableInEnemyFactionTerritory" to oldConfig.getBoolean("laddersPlaceableInEnemyFactionTerritory"),
+            "pvp.warRequiredForPlayersOfDifferentFactions" to oldConfig.getBoolean("warsRequiredForPVP"),
+            "factions.maxNameLength" to oldConfig.getInt("factionMaxNameLength"),
+            "gates.maxPerFaction" to oldConfig.getInt("factionMaxNumberGates"),
+            "gates.maxBlocks" to oldConfig.getInt("factionMaxGateArea"),
+            "factions.zeroPowerFactionsGetDisbanded" to oldConfig.getBoolean("zeroPowerFactionsGetDisbanded"),
+            "factions.vassalPowerContributionMultiplier" to oldConfig.getDouble("vassalContributionPercentageMultiplier"),
+            "factions.nonMembersCanInteractWithDoors" to oldConfig.getBoolean("nonMembersCanInteractWithDoors"),
+            "chat.enableDefaultChatFormatting" to oldConfig.getBoolean("playersChatWithPrefixes"),
+            "factions.maxClaimRadius" to oldConfig.getInt("maxClaimRadius"),
+            "language" to oldConfig.getString("languageid"),
+            "factions.titleTerritoryIndicator" to oldConfig.getBoolean("territoryAlertPopUp"),
+            "factions.actionBarTerritoryIndicator" to oldConfig.getBoolean("territoryIndicatorActionbar"),
+            "factions.allowNeutrality" to oldConfig.getBoolean("allowNeutrality"),
+            "factions.limitLand" to oldConfig.getBoolean("limitLand"),
+            "players.powerLostOnDeath" to oldConfig.getDouble("powerLostOnDeath"),
+            "players.powerGainedOnKill" to oldConfig.getDouble("powerGainedOnKill")
+        )
+        check(plugin.updateOperatorConfig(updates)) {
+            "MF4 configuration values could not be published safely"
+        }
         plugin.logger.info("Config migration complete (${System.currentTimeMillis() - startTime}ms)")
     }
 

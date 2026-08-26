@@ -31,15 +31,11 @@ class MfFactionDpcCommand(private val plugin: MedievalFactions) : CommandExecuto
     }
 
     private fun handleOptIn(sender: CommandSender) {
-        plugin.config.set("dpc-api.enabled", true)
-        plugin.saveConfig()
-        sender.sendMessage("$GREEN${plugin.language["CommandFactionDpcOptInSuccess"]}")
+        persist(sender, "dpc-api.enabled", true, "CommandFactionDpcOptInSuccess")
     }
 
     private fun handleOptOut(sender: CommandSender) {
-        plugin.config.set("dpc-api.enabled", false)
-        plugin.saveConfig()
-        sender.sendMessage("$GREEN${plugin.language["CommandFactionDpcOptOutSuccess"]}")
+        persist(sender, "dpc-api.enabled", false, "CommandFactionDpcOptOutSuccess")
     }
 
     private fun handleReminder(sender: CommandSender, args: Array<out String>) {
@@ -49,14 +45,10 @@ class MfFactionDpcCommand(private val plugin: MedievalFactions) : CommandExecuto
         }
         when (args[1].lowercase()) {
             "on" -> {
-                plugin.config.set("dpc-api.login-reminder", true)
-                plugin.saveConfig()
-                sender.sendMessage("$GREEN${plugin.language["CommandFactionDpcReminderOnSuccess"]}")
+                persist(sender, "dpc-api.login-reminder", true, "CommandFactionDpcReminderOnSuccess")
             }
             "off" -> {
-                plugin.config.set("dpc-api.login-reminder", false)
-                plugin.saveConfig()
-                sender.sendMessage("$GREEN${plugin.language["CommandFactionDpcReminderOffSuccess"]}")
+                persist(sender, "dpc-api.login-reminder", false, "CommandFactionDpcReminderOffSuccess")
             }
             else -> sender.sendMessage("$RED${plugin.language["CommandFactionDpcReminderUsage"]}")
         }
@@ -69,14 +61,10 @@ class MfFactionDpcCommand(private val plugin: MedievalFactions) : CommandExecuto
         }
         when (args[1].lowercase()) {
             "on" -> {
-                plugin.config.set("dpc-api.share-server-ip", true)
-                plugin.saveConfig()
-                sender.sendMessage("$GREEN${plugin.language["CommandFactionDpcShareIpOnSuccess"]}")
+                persist(sender, "dpc-api.share-server-ip", true, "CommandFactionDpcShareIpOnSuccess")
             }
             "off" -> {
-                plugin.config.set("dpc-api.share-server-ip", false)
-                plugin.saveConfig()
-                sender.sendMessage("$GREEN${plugin.language["CommandFactionDpcShareIpOffSuccess"]}")
+                persist(sender, "dpc-api.share-server-ip", false, "CommandFactionDpcShareIpOffSuccess")
             }
             else -> sender.sendMessage("$RED${plugin.language["CommandFactionDpcShareIpUsage"]}")
         }
@@ -89,9 +77,7 @@ class MfFactionDpcCommand(private val plugin: MedievalFactions) : CommandExecuto
         }
         when (args[1].lowercase()) {
             "clear" -> {
-                plugin.config.set("dpc-api.discord-link", "")
-                plugin.saveConfig()
-                sender.sendMessage("$GREEN${plugin.language["CommandFactionDpcDiscordClearSuccess"]}")
+                persist(sender, "dpc-api.discord-link", "", "CommandFactionDpcDiscordClearSuccess")
             }
             else -> {
                 val link = args[1]
@@ -99,10 +85,20 @@ class MfFactionDpcCommand(private val plugin: MedievalFactions) : CommandExecuto
                     sender.sendMessage("$RED${plugin.language["CommandFactionDpcDiscordInvalidLink"]}")
                     return
                 }
-                plugin.config.set("dpc-api.discord-link", link)
-                plugin.saveConfig()
-                sender.sendMessage("$GREEN${plugin.language["CommandFactionDpcDiscordSetSuccess", link]}")
+                if (plugin.updateOperatorConfig(mapOf("dpc-api.discord-link" to link))) {
+                    sender.sendMessage("$GREEN${plugin.language["CommandFactionDpcDiscordSetSuccess", link]}")
+                } else {
+                    sender.sendMessage("$RED${plugin.language["CommandFactionDpcSaveFailed"]}")
+                }
             }
+        }
+    }
+
+    private fun persist(sender: CommandSender, path: String, value: Any, successKey: String) {
+        if (plugin.updateOperatorConfig(mapOf(path to value))) {
+            sender.sendMessage("$GREEN${plugin.language[successKey]}")
+        } else {
+            sender.sendMessage("$RED${plugin.language["CommandFactionDpcSaveFailed"]}")
         }
     }
 
