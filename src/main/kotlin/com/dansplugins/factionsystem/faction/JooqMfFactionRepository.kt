@@ -1,6 +1,7 @@
 package com.dansplugins.factionsystem.faction
 
 import com.dansplugins.factionsystem.MedievalFactions
+import com.dansplugins.factionsystem.api.WarEndNotice
 import com.dansplugins.factionsystem.area.MfPosition
 import com.dansplugins.factionsystem.faction.flag.MfFlagValues
 import com.dansplugins.factionsystem.faction.role.MfFactionRole
@@ -17,18 +18,21 @@ import com.dansplugins.factionsystem.jooq.tables.records.MfFactionInviteRecord
 import com.dansplugins.factionsystem.jooq.tables.records.MfFactionMemberRecord
 import com.dansplugins.factionsystem.jooq.tables.records.MfFactionRecord
 import com.dansplugins.factionsystem.player.MfPlayerId
+import com.dansplugins.factionsystem.warend.WarEndOutboxWriter
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import org.jooq.Condition
 import org.jooq.DSLContext
 import org.jooq.JSON
 import org.jooq.impl.DSL.`val`
+import java.time.Clock
 import java.util.*
 
 class JooqMfFactionRepository(
     private val plugin: MedievalFactions,
     private val dsl: DSLContext,
-    private val gson: Gson
+    private val gson: Gson,
+    private val clock: Clock = Clock.systemUTC()
 ) : MfFactionRepository {
 
     override fun getFaction(id: MfFactionId): MfFaction? = getFaction(MF_FACTION.ID.eq(id.value))
@@ -113,19 +117,25 @@ class JooqMfFactionRepository(
     override fun upsertAll(
         factions: List<MfFaction>,
         departedLockOwners: Set<MfPlayerId>
-    ): List<MfFaction> = persistBatch(factions, emptyList(), departedLockOwners)
+    ): List<MfFaction> = persistBatch(factions, emptyList(), departedLockOwners).factions
 
     override fun upsertAllAndDelete(
         factions: List<MfFaction>,
         deletedFactions: List<MfFaction>,
         departedLockOwners: Set<MfPlayerId>
-    ): List<MfFaction> = persistBatch(factions, deletedFactions, departedLockOwners)
+    ): List<MfFaction> = persistBatch(factions, deletedFactions, departedLockOwners).factions
+
+    override fun upsertAllAndDeleteWithWarEnds(
+        factions: List<MfFaction>,
+        deletedFactions: List<MfFaction>,
+        departedLockOwners: Set<MfPlayerId>
+    ): FactionBatchCommit = persistBatch(factions, deletedFactions, departedLockOwners)
 
     private fun persistBatch(
         factions: List<MfFaction>,
         deletedFactions: List<MfFaction>,
         departedLockOwners: Set<MfPlayerId>
-    ): List<MfFaction> =
+    ): FactionBatchCommit =
         dsl.transactionResult { config ->
             val transactionalDsl = config.dsl()
             val persisted = factions.map { faction -> upsert(transactionalDsl, faction) }
@@ -134,6 +144,11 @@ class JooqMfFactionRepository(
                     .where(MF_LOCKED_BLOCK.PLAYER_ID.`in`(departedLockOwners.map(MfPlayerId::value)))
                     .execute()
             }
+            val warEnds = WarEndOutboxWriter.appendForFactionDeletion(
+                transactionalDsl,
+                deletedFactions.map { it.id.value }.toSet(),
+                clock.instant()
+            )
             deletedFactions.forEach { faction ->
                 val deleted = transactionalDsl.deleteFrom(MF_FACTION)
                     .where(MF_FACTION.ID.eq(faction.id.value))
@@ -145,7 +160,7 @@ class JooqMfFactionRepository(
                     )
                 }
             }
-            persisted
+            FactionBatchCommit(persisted, warEnds)
         }
 
     private fun upsert(transactionalDsl: DSLContext, faction: MfFaction): MfFaction {
@@ -317,11 +332,23 @@ class JooqMfFactionRepository(
     }
 
     override fun delete(factionId: MfFactionId) {
-        val deleted = dsl.deleteFrom(MF_FACTION)
-            .where(MF_FACTION.ID.eq(factionId.value))
-            .execute()
-        check(deleted == 1) { "No faction row was deleted for ${factionId.value}" }
+        deleteWithWarEnds(factionId)
     }
+
+    override fun deleteWithWarEnds(factionId: MfFactionId): List<WarEndNotice> =
+        dsl.transactionResult { configuration ->
+            val transactionalDsl = configuration.dsl()
+            val warEnds = WarEndOutboxWriter.appendForFactionDeletion(
+                transactionalDsl,
+                setOf(factionId.value),
+                clock.instant()
+            )
+            val deleted = transactionalDsl.deleteFrom(MF_FACTION)
+                .where(MF_FACTION.ID.eq(factionId.value))
+                .execute()
+            check(deleted == 1) { "No faction row was deleted for ${factionId.value}" }
+            warEnds
+        }
 
     private fun MfFactionRecord.toDomain(members: List<MfFactionMember> = emptyList(), invites: List<MfFactionInvite> = emptyList(), roles: List<MfFactionRole>? = null, applications: List<MfFactionApplication> = emptyList()): MfFaction {
         val factionRoles = MfFactionRoles(

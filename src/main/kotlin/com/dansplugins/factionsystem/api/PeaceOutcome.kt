@@ -24,9 +24,8 @@ enum class PeaceOutcome {
      * each other in [FactionView.factionsAtWarWith], because MF reads a war from a row in *either*
      * direction.
      *
-     * No API event is fired for this. MF publishes nothing for a peace request -- its command
-     * announces one in chat, from the command body -- so a consumer that wants this said out loud
-     * must say it itself.
+     * [event.FactionPeaceRequestedEvent] is fired after the caller's rows have been committed and
+     * carries the caller as the requesting faction, as it is for [PEACE_MADE].
      */
     PEACE_REQUESTED,
 
@@ -34,8 +33,8 @@ enum class PeaceOutcome {
      * That was the last `AT_WAR` row between them, so the war is over.
      *
      * Reached either because the other faction had already laid its half down, or because it never
-     * held one. [event.FactionWarEndedEvent] is fired, so a consumer must not assume it is the only
-     * observer, and must not announce peace twice.
+     * held one. [event.FactionPeaceRequestedEvent] records this caller's voluntary request first;
+     * [event.FactionWarEndedEvent] is then fired, so a consumer must not announce peace twice.
      */
     PEACE_MADE
 }

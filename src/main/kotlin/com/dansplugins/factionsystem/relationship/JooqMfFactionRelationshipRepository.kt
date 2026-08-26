@@ -1,11 +1,17 @@
 package com.dansplugins.factionsystem.relationship
 
+import com.dansplugins.factionsystem.api.WarEndReason
 import com.dansplugins.factionsystem.faction.MfFactionId
 import com.dansplugins.factionsystem.jooq.Tables.MF_FACTION_RELATIONSHIP
 import com.dansplugins.factionsystem.jooq.tables.records.MfFactionRelationshipRecord
+import com.dansplugins.factionsystem.warend.WarEndOutboxWriter
 import org.jooq.DSLContext
+import java.time.Clock
 
-class JooqMfFactionRelationshipRepository(val dsl: DSLContext) : MfFactionRelationshipRepository {
+class JooqMfFactionRelationshipRepository(
+    val dsl: DSLContext,
+    private val clock: Clock = Clock.systemUTC()
+) : MfFactionRelationshipRepository {
 
     override fun getFactionRelationship(relationshipId: MfFactionRelationshipId): MfFactionRelationship? {
         return dsl.selectFrom(MF_FACTION_RELATIONSHIP)
@@ -46,29 +52,107 @@ class JooqMfFactionRelationshipRepository(val dsl: DSLContext) : MfFactionRelati
             .map { it.toDomain() }
     }
 
-    override fun upsert(relationship: MfFactionRelationship): MfFactionRelationship {
-        dsl.insertInto(MF_FACTION_RELATIONSHIP)
-            .set(MF_FACTION_RELATIONSHIP.ID, relationship.id.value)
-            .set(MF_FACTION_RELATIONSHIP.FACTION_ID, relationship.factionId.value)
-            .set(MF_FACTION_RELATIONSHIP.TARGET_ID, relationship.targetId.value)
-            .set(MF_FACTION_RELATIONSHIP.TYPE, relationship.type.name)
-            .onConflict(MF_FACTION_RELATIONSHIP.ID).doUpdate()
-            .set(MF_FACTION_RELATIONSHIP.FACTION_ID, relationship.factionId.value)
-            .set(MF_FACTION_RELATIONSHIP.TARGET_ID, relationship.targetId.value)
-            .set(MF_FACTION_RELATIONSHIP.TYPE, relationship.type.name)
-            .where(MF_FACTION_RELATIONSHIP.ID.eq(relationship.id.value))
-            .execute()
-        return dsl.selectFrom(MF_FACTION_RELATIONSHIP)
-            .where(MF_FACTION_RELATIONSHIP.ID.eq(relationship.id.value))
-            .fetchOne()
-            .let(::requireNotNull)
-            .toDomain()
-    }
+    override fun upsert(relationship: MfFactionRelationship): MfFactionRelationship =
+        dsl.transactionResult { configuration ->
+            val transactionalDsl = configuration.dsl()
+            transactionalDsl.insertInto(MF_FACTION_RELATIONSHIP)
+                .set(MF_FACTION_RELATIONSHIP.ID, relationship.id.value)
+                .set(MF_FACTION_RELATIONSHIP.FACTION_ID, relationship.factionId.value)
+                .set(MF_FACTION_RELATIONSHIP.TARGET_ID, relationship.targetId.value)
+                .set(MF_FACTION_RELATIONSHIP.TYPE, relationship.type.name)
+                .onConflict(MF_FACTION_RELATIONSHIP.ID).doUpdate()
+                .set(MF_FACTION_RELATIONSHIP.FACTION_ID, relationship.factionId.value)
+                .set(MF_FACTION_RELATIONSHIP.TARGET_ID, relationship.targetId.value)
+                .set(MF_FACTION_RELATIONSHIP.TYPE, relationship.type.name)
+                .where(MF_FACTION_RELATIONSHIP.ID.eq(relationship.id.value))
+                .execute()
+            val persisted = transactionalDsl.selectFrom(MF_FACTION_RELATIONSHIP)
+                .where(MF_FACTION_RELATIONSHIP.ID.eq(relationship.id.value))
+                .fetchOne()
+                .let(::requireNotNull)
+                .toDomain()
+            if (persisted.type == MfFactionRelationshipType.AT_WAR) {
+                val mirrorExists = transactionalDsl.fetchExists(
+                    transactionalDsl.selectOne()
+                        .from(MF_FACTION_RELATIONSHIP)
+                        .where(
+                            MF_FACTION_RELATIONSHIP.FACTION_ID.eq(persisted.targetId.value)
+                        )
+                        .and(
+                            MF_FACTION_RELATIONSHIP.TARGET_ID.eq(persisted.factionId.value)
+                        )
+                        .and(
+                            MF_FACTION_RELATIONSHIP.TYPE.eq(
+                                MfFactionRelationshipType.AT_WAR.name
+                            )
+                        )
+                )
+                if (mirrorExists) {
+                    WarEndOutboxWriter.markFullyEstablished(
+                        transactionalDsl,
+                        persisted.factionId.value,
+                        persisted.targetId.value
+                    )
+                }
+            }
+            persisted
+        }
 
     override fun delete(relationshipId: MfFactionRelationshipId) {
-        dsl.deleteFrom(MF_FACTION_RELATIONSHIP)
+        deleteWithWarEnd(relationshipId, WarEndReason.RELATIONSHIP_REMOVED, null)
+    }
+
+    override fun deleteWithWarEnd(
+        relationshipId: MfFactionRelationshipId,
+        reason: WarEndReason,
+        actingFaction: MfFactionId?
+    ): RelationshipDeleteCommit = dsl.transactionResult { configuration ->
+        val transactionalDsl = configuration.dsl()
+        val relationship = transactionalDsl.selectFrom(MF_FACTION_RELATIONSHIP)
+            .where(MF_FACTION_RELATIONSHIP.ID.eq(relationshipId.value))
+            .forUpdate()
+            .fetchOne()
+            ?.toDomain()
+            ?: return@transactionResult RelationshipDeleteCommit(null, null)
+
+        transactionalDsl.deleteFrom(MF_FACTION_RELATIONSHIP)
             .where(MF_FACTION_RELATIONSHIP.ID.eq(relationshipId.value))
             .execute()
+
+        val warEnd = if (relationship.type == MfFactionRelationshipType.AT_WAR) {
+            val remaining = transactionalDsl.fetchCount(
+                transactionalDsl.selectOne()
+                    .from(MF_FACTION_RELATIONSHIP)
+                    .where(MF_FACTION_RELATIONSHIP.TYPE.eq(MfFactionRelationshipType.AT_WAR.name))
+                    .and(
+                        MF_FACTION_RELATIONSHIP.FACTION_ID.eq(relationship.factionId.value)
+                            .and(MF_FACTION_RELATIONSHIP.TARGET_ID.eq(relationship.targetId.value))
+                            .or(
+                                MF_FACTION_RELATIONSHIP.FACTION_ID.eq(relationship.targetId.value)
+                                    .and(
+                                        MF_FACTION_RELATIONSHIP.TARGET_ID.eq(
+                                            relationship.factionId.value
+                                        )
+                                    )
+                            )
+                    )
+            )
+            if (remaining == 0) {
+                WarEndOutboxWriter.append(
+                    transactionalDsl,
+                    relationship.factionId.value,
+                    relationship.targetId.value,
+                    reason,
+                    actingFaction?.value,
+                    clock.instant()
+                )
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+        RelationshipDeleteCommit(relationship, warEnd)
     }
 
     private fun MfFactionRelationshipRecord.toDomain() = MfFactionRelationship(

@@ -2,6 +2,7 @@ package com.dansplugins.factionsystem.api.impl
 
 import com.dansplugins.factionsystem.MedievalFactions
 import com.dansplugins.factionsystem.api.FactionId
+import com.dansplugins.factionsystem.api.event.FactionWarEndedCommittedEvent
 import com.dansplugins.factionsystem.api.event.FactionWarEndedEvent
 import com.dansplugins.factionsystem.api.event.FactionWarStartedEvent
 import com.dansplugins.factionsystem.event.relationship.RelationshipCreatedEvent
@@ -22,6 +23,8 @@ import java.util.concurrent.ConcurrentHashMap
  * cannot tell that a deleted relationship was a war. This listener caches relationship id -> value so
  * it can. It also collapses the possibly-two-row AT_WAR representation into exactly one
  * [FactionWarStartedEvent] / [FactionWarEndedEvent] per faction pair, fired on the main thread.
+ * A final war-row delete also emits [FactionWarEndedCommittedEvent] inline before the legacy
+ * main-thread event is queued.
  *
  * The internal events consumed here are post-commit. A failed create/delete therefore emits no
  * stable event, while a create immediately followed by a delete queues a start and an end in that
@@ -87,6 +90,14 @@ class ApiRelationshipListener(private val plugin: MedievalFactions) : Listener {
                 relationshipService.getRelationships(relationship.targetId, relationship.factionId)
             ).any { it.type == AT_WAR }
         if (!stillAtWar && warringPairs.remove(pair)) {
+            event.warEndNotice?.let { notice ->
+                plugin.server.pluginManager.callEvent(
+                    FactionWarEndedCommittedEvent(
+                        notice,
+                        event.isAsynchronous
+                    )
+                )
+            }
             fireWarEvent(relationship.factionId, relationship.targetId, started = false)
         }
     }

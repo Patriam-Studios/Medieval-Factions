@@ -2,6 +2,7 @@ package com.dansplugins.factionsystem.faction
 
 import com.dansplugins.factionsystem.MedievalFactions
 import com.dansplugins.factionsystem.api.FactionId
+import com.dansplugins.factionsystem.api.WarEndNotice
 import com.dansplugins.factionsystem.api.event.FactionMemberLeftEvent
 import com.dansplugins.factionsystem.api.event.FactionPrimaryOwnerChangedEvent
 import com.dansplugins.factionsystem.api.impl.FactionViewAdapter
@@ -629,8 +630,8 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
 
             claimService.evictAllClaims(sourceId)
             gateService.evictAllGates(sourceId)
-            relationshipService.evictForDeletedFaction(sourceId)
-            publishCommitted(plan, persisted)
+            relationshipService.evictForDeletedFaction(sourceId, persisted.warEnds)
+            publishCommitted(plan, persisted.factions)
             plugin.server.pluginManager.callEvent(
                 FactionDeletedEvent(sourceId, !plugin.server.isPrimaryThread)
             )
@@ -665,7 +666,7 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
     private fun commitAndDelete(
         plan: List<SaveMutation>,
         deletedFaction: MfFaction
-    ): Map<MfFactionId, MfFaction> {
+    ): FactionDeleteCommit {
         require(plan.none { it.proposed.id == deletedFaction.id }) {
             "A faction cannot be saved and deleted in the same mutation"
         }
@@ -685,7 +686,7 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
             val departedLockOwners = plan.flatMap(SaveMutation::removedMembers).toSet()
             plugin.services.lockService.withMutationLock {
                 val persisted = try {
-                    repository.upsertAllAndDelete(
+                    repository.upsertAllAndDeleteWithWarEnds(
                         plan.map(SaveMutation::proposed),
                         listOf(deletedFaction),
                         departedLockOwners
@@ -695,21 +696,29 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
                 } catch (failure: Throwable) {
                     throw RepositoryCommitUncertain(failure)
                 }
-                check(persisted.size == plan.size) {
+                check(persisted.factions.size == plan.size) {
                     "Faction repository returned a partial batch"
                 }
                 factionCacheLock.write {
-                    persisted.forEach { faction -> factionsById[faction.id] = faction }
+                    persisted.factions.forEach { faction -> factionsById[faction.id] = faction }
                     // Test hook lives inside the write boundary so a deterministic reader can prove
                     // it cannot observe admitted members before their source disappears.
                     cachePublicationHook()
                     factionsById.remove(deletedFaction.id)
                 }
                 plugin.services.lockService.unloadLockedBlocks(departedLockOwners)
-                persisted.associateBy(MfFaction::id)
+                FactionDeleteCommit(
+                    persisted.factions.associateBy(MfFaction::id),
+                    persisted.warEnds
+                )
             }
         }
     }
+
+    private data class FactionDeleteCommit(
+        val factions: Map<MfFactionId, MfFaction>,
+        val warEnds: List<WarEndNotice>
+    )
 
     @JvmName("deleteFactionByFactionId")
     fun delete(factionId: MfFactionId): Result4k<Unit, ServiceFailure> = resultFrom {
@@ -745,16 +754,17 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
                 // all have ON DELETE CASCADE migrations, so the database commits the entire removal
                 // as one statement. The old order irreversibly deleted children before this final
                 // statement; a repository failure left a live faction stripped of every asset.
-                commitLock(factionId).withLock {
-                    repository.delete(factionId)
+                val warEnds = commitLock(factionId).withLock {
+                    val committedWarEnds = repository.deleteWithWarEnds(factionId)
                     factionCacheLock.write { factionsById.remove(factionId) }
+                    committedWarEnds
                 }
 
                 // Only after that statement commits do the service caches mirror its cascades. A
                 // failed parent delete therefore leaves database and live indexes untouched.
                 claimService.evictAllClaims(factionId)
                 gateService.evictAllGates(factionId)
-                relationshipService.evictForDeletedFaction(factionId)
+                relationshipService.evictForDeletedFaction(factionId, warEnds)
                 plugin.server.pluginManager.callEvent(
                     FactionDeletedEvent(factionId, !plugin.server.isPrimaryThread)
                 )

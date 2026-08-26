@@ -11,6 +11,7 @@ import com.dansplugins.factionsystem.api.MedievalFactionsApi
 import com.dansplugins.factionsystem.api.PeaceOutcome
 import com.dansplugins.factionsystem.api.PrimaryOwnerReplaceOutcome
 import com.dansplugins.factionsystem.api.SuccessionPolicy
+import com.dansplugins.factionsystem.api.WarEndNotice
 import com.dansplugins.factionsystem.api.geometry.ChunkPos
 import com.dansplugins.factionsystem.area.MfPosition
 import com.dansplugins.factionsystem.claim.MfClaimedChunk
@@ -55,6 +56,43 @@ class DefaultMedievalFactionsApi(private val plugin: MedievalFactions) : Medieva
 
     override fun getFactions(): List<FactionView> =
         plugin.services.factionService.factions.map(::toView)
+
+    override fun isWarPairEstablished(faction: FactionId, otherFaction: FactionId): Boolean {
+        if (faction == otherFaction) return false
+        val relationships = plugin.services.factionRelationshipService
+        val a = MfFactionId(faction.value)
+        val b = MfFactionId(otherFaction.value)
+        return relationships.getRelationships(a, b).any { it.type == AT_WAR } &&
+            relationships.getRelationships(b, a).any { it.type == AT_WAR }
+    }
+
+    override fun getUnacknowledgedWarEnds(
+        consumerId: String
+    ): ApiOutcome<List<WarEndNotice>> {
+        val validation = validateWarEndConsumerId(consumerId)
+        if (validation != null) return ApiOutcome.failure(validation)
+        return try {
+            ApiOutcome.success(
+                plugin.services.warEndOutboxRepository.getUnacknowledged(consumerId)
+            )
+        } catch (failure: Exception) {
+            ApiOutcome.failure("Failed to read durable war ends: ${failure.message}")
+        }
+    }
+
+    override fun acknowledgeWarEnd(consumerId: String, noticeId: UUID): ApiResult {
+        val validation = validateWarEndConsumerId(consumerId)
+        if (validation != null) return ApiResult.failure(validation)
+        return try {
+            if (plugin.services.warEndOutboxRepository.acknowledge(consumerId, noticeId)) {
+                ApiResult.success()
+            } else {
+                ApiResult.failure("No durable war-end notice with id $noticeId")
+            }
+        } catch (failure: Exception) {
+            ApiResult.failure("Failed to acknowledge durable war end: ${failure.message}")
+        }
+    }
 
     override fun getFactionAt(chunk: Chunk): FactionView? {
         val claim = plugin.services.claimService.getClaim(chunk) ?: return null
@@ -248,34 +286,13 @@ class DefaultMedievalFactionsApi(private val plugin: MedievalFactions) : Medieva
         val factionService = plugin.services.factionService
         if (factionService.getFaction(a) == null) return ApiOutcome.failure("No faction with id ${faction.value}")
         if (factionService.getFaction(b) == null) return ApiOutcome.failure("No faction with id ${otherFaction.value}")
-        val relationshipService = plugin.services.factionRelationshipService
-        val ownRows = relationshipService.getRelationships(a, b).filter { it.type == AT_WAR }
-        // Read BEFORE the deletes, because after them the answer is the same either way. Whether this
-        // was a request or a peace is decided entirely by what the other side is still holding.
-        val theirRows = relationshipService.getRelationships(b, a).filter { it.type == AT_WAR }
-        if (ownRows.isEmpty()) {
-            // Two distinct failures, as the command has two distinct messages. Collapsing them into
-            // "not at war" would tell a caller whose half is already down that there is no war, which
-            // is the opposite of the truth: the other side is still at war with it.
-            return if (theirRows.isEmpty()) {
-                ApiOutcome.failure("Factions are not at war")
-            } else {
-                ApiOutcome.failure(
-                    "Faction ${faction.value} has already laid its half of the war down; peace has " +
-                        "already been requested from faction ${otherFaction.value}"
-                )
-            }
+        // The relationship service owns the read, complete one-sided delete, outcome decision and
+        // attribution event under one mutation lock. Keeping them together prevents a second caller
+        // from observing the same rows and prevents WarEnded from overtaking PeaceRequested.
+        return when (val result = plugin.services.factionRelationshipService.layDownArms(a, b)) {
+            is Failure -> ApiOutcome.failure(result.reason.message)
+            is Success -> ApiOutcome.success(result.value)
         }
-        ownRows.forEach { relationship ->
-            val result = relationshipService.delete(relationship.id)
-            if (result is Failure) {
-                return ApiOutcome.failure(result.reason.message)
-            }
-        }
-        // ApiRelationshipListener fires FactionWarEndedEvent off the LAST delete, and only when no
-        // AT_WAR row survives in either direction, so this branch reports what that listener has
-        // already decided rather than deciding it a second time.
-        return ApiOutcome.success(if (theirRows.isEmpty()) PeaceOutcome.PEACE_MADE else PeaceOutcome.PEACE_REQUESTED)
     }
 
     override fun setPrimaryOwner(faction: FactionId, playerId: UUID): ApiResult {
@@ -723,5 +740,16 @@ class DefaultMedievalFactionsApi(private val plugin: MedievalFactions) : Medieva
     private fun Result4k<*, ServiceFailure>.toApiResult(): ApiResult = when (this) {
         is Success -> ApiResult.success()
         is Failure -> ApiResult.failure(reason.message)
+    }
+
+    private fun validateWarEndConsumerId(consumerId: String): String? =
+        if (WAR_END_CONSUMER_ID.matches(consumerId)) {
+            null
+        } else {
+            "War-end consumer id must be 1-128 ASCII letters, digits, dots, colons, underscores or hyphens"
+        }
+
+    private companion object {
+        val WAR_END_CONSUMER_ID = Regex("[A-Za-z0-9._:-]{1,128}")
     }
 }

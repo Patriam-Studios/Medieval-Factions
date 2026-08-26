@@ -1,6 +1,7 @@
 package com.dansplugins.factionsystem.command.faction.help
 
 import com.dansplugins.factionsystem.MedievalFactions
+import com.dansplugins.factionsystem.api.FactionSubcommandHelpLine
 import com.dansplugins.factionsystem.pagination.PaginatedView
 import net.md_5.bungee.api.chat.TextComponent
 import org.bukkit.command.Command
@@ -10,7 +11,10 @@ import org.bukkit.command.TabCompleter
 import net.md_5.bungee.api.ChatColor as SpigotChatColor
 import org.bukkit.ChatColor as BukkitChatColor
 
-class MfFactionHelpCommand(private val plugin: MedievalFactions) : CommandExecutor, TabCompleter {
+class MfFactionHelpCommand(
+    private val plugin: MedievalFactions,
+    private val extensionHelpLines: (CommandSender) -> List<FactionSubcommandHelpLine> = { emptyList() }
+) : CommandExecutor, TabCompleter {
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         if (!sender.hasPermission("mf.help")) {
             sender.sendMessage("${BukkitChatColor.RED}${plugin.language["CommandFactionHelpNoPermission"]}")
@@ -112,7 +116,9 @@ class MfFactionHelpCommand(private val plugin: MedievalFactions) : CommandExecut
                 arrayOf(TextComponent(plugin.language["CommandFactionHelpFactionApprove"]).apply { color = SpigotChatColor.GRAY }),
                 arrayOf(TextComponent(plugin.language["CommandFactionHelpFactionDeny"]).apply { color = SpigotChatColor.GRAY }),
                 arrayOf(TextComponent(plugin.language["CommandFactionHelpFactionPendingActions"]).apply { color = SpigotChatColor.GRAY })
-            )
+            ) + extensionHelpLines(sender).map { line ->
+                arrayOf(TextComponent(line.text).apply { color = SpigotChatColor.GRAY })
+            }
         ) { page -> "/faction help ${page + 1}" }
         if (pageNumber !in view.pages.indices) {
             sender.sendMessage("${BukkitChatColor.RED}${plugin.language["CommandFactionHelpInvalidPageNumber"]}")

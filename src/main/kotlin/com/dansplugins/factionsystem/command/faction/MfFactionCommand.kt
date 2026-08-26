@@ -60,7 +60,10 @@ import org.bukkit.command.TabCompleter
 
 class MfFactionCommand(private val plugin: MedievalFactions) : CommandExecutor, TabCompleter {
 
-    private val factionHelpCommand = MfFactionHelpCommand(plugin)
+    private val extensionCommands = FactionSubcommandExtensions(plugin)
+    private val factionHelpCommand = MfFactionHelpCommand(plugin) { sender ->
+        extensionCommands.helpLines(sender, builtInAliasSet)
+    }
     private val factionCreateCommand = MfFactionCreateCommand(plugin)
     private val factionClaimCommand = MfFactionClaimCommand(plugin)
     private val factionLawCommand = MfFactionLawCommand(plugin)
@@ -216,6 +219,11 @@ class MfFactionCommand(private val plugin: MedievalFactions) : CommandExecutor, 
         heirAliases +
         versionAliases
 
+    private val builtInAliasSet = subcommands.map(String::lowercase).toSet()
+
+    private fun allSubcommands(): List<String> =
+        (subcommands + extensionCommands.aliases(builtInAliasSet)).distinctBy(String::lowercase)
+
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         return when (args.firstOrNull()?.lowercase()) {
             in helpAliases -> factionHelpCommand.onCommand(sender, command, label, args.drop(1).toTypedArray())
@@ -270,27 +278,34 @@ class MfFactionCommand(private val plugin: MedievalFactions) : CommandExecutor, 
             in transferAliases -> factionTransferCommand.onCommand(sender, command, label, args.drop(1).toTypedArray())
             in heirAliases -> factionHeirCommand.onCommand(sender, command, label, args.drop(1).toTypedArray())
             else -> {
-                // Patriam fork: styled "about" screen. Built here rather than from the language
-                // files because the Language class does not translate '&' codes and has no
-                // cross-locale key fallback, so keeping the layout in code renders identically in
-                // every language and in one place.
-                val version = plugin.description.version
-                val developers = plugin.description.authors.joinToString()
-                val currentLanguage = plugin.config.getString("language") ?: "en_US"
-                val border = "&8&m" + " ".repeat(50)
-                listOf(
-                    border,
-                    "&b&lMedieval Factions &7v$version",
-                    "&7Modified by &egerber11 &7for Patriam use",
-                    "&7Developers: &f$developers",
-                    "&7Wiki: &fhttps://github.com/dmccoystephenson/Medieval-Factions/wiki",
-                    "&7Language: &f$currentLanguage",
-                    "&7A list of commands: &6/f help",
-                    border
-                ).forEach { line ->
-                    sender.sendMessage(ChatColor.translateAlternateColorCodes('&', line))
+                val extensionResult = args.firstOrNull()?.let { alias ->
+                    extensionCommands.execute(sender, alias, args.drop(1), builtInAliasSet)
                 }
-                true
+                if (extensionResult != null) {
+                    extensionResult
+                } else {
+                    // Patriam fork: styled "about" screen. Built here rather than from the language
+                    // files because the Language class does not translate '&' codes and has no
+                    // cross-locale key fallback, so keeping the layout in code renders identically in
+                    // every language and in one place.
+                    val version = plugin.description.version
+                    val developers = plugin.description.authors.joinToString()
+                    val currentLanguage = plugin.config.getString("language") ?: "en_US"
+                    val border = "&8&m" + " ".repeat(50)
+                    listOf(
+                        border,
+                        "&b&lMedieval Factions &7v$version",
+                        "&7Modified by &egerber11 &7for Patriam use",
+                        "&7Developers: &f$developers",
+                        "&7Wiki: &fhttps://github.com/dmccoystephenson/Medieval-Factions/wiki",
+                        "&7Language: &f$currentLanguage",
+                        "&7A list of commands: &6/f help",
+                        border
+                    ).forEach { line ->
+                        sender.sendMessage(ChatColor.translateAlternateColorCodes('&', line))
+                    }
+                    true
+                }
             }
         }
     }
@@ -301,8 +316,8 @@ class MfFactionCommand(private val plugin: MedievalFactions) : CommandExecutor, 
         label: String,
         args: Array<out String>
     ) = when {
-        args.isEmpty() -> subcommands
-        args.size == 1 -> subcommands.filter { it.startsWith(args[0].lowercase()) }
+        args.isEmpty() -> allSubcommands()
+        args.size == 1 -> allSubcommands().filter { it.startsWith(args[0].lowercase()) }
         else -> when (args.first().lowercase()) {
             in helpAliases -> factionHelpCommand.onTabComplete(sender, command, label, args.drop(1).toTypedArray())
             in createAliases -> factionCreateCommand.onTabComplete(sender, command, label, args.drop(1).toTypedArray())
@@ -353,7 +368,12 @@ class MfFactionCommand(private val plugin: MedievalFactions) : CommandExecutor, 
             in pendingActionsAliases -> factionPendingActionsCommand.onTabComplete(sender, command, label, args.drop(1).toTypedArray())
             in transferAliases -> factionTransferCommand.onTabComplete(sender, command, label, args.drop(1).toTypedArray())
             in heirAliases -> factionHeirCommand.onTabComplete(sender, command, label, args.drop(1).toTypedArray())
-            else -> emptyList()
+            else -> extensionCommands.tabComplete(
+                sender,
+                args.first(),
+                args.drop(1),
+                builtInAliasSet
+            ).orEmpty()
         }
     }
 }

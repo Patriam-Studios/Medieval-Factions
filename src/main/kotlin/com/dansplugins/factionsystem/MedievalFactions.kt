@@ -88,6 +88,8 @@ import com.dansplugins.factionsystem.relationship.MfFactionRelationshipRepositor
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipService
 import com.dansplugins.factionsystem.service.Services
 import com.dansplugins.factionsystem.teleport.MfTeleportService
+import com.dansplugins.factionsystem.warend.JooqWarEndOutboxRepository
+import com.dansplugins.factionsystem.warend.WarEndOutboxRepository
 import com.google.gson.Gson
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
@@ -216,6 +218,7 @@ class MedievalFactions : JavaPlugin() {
         val chatMessageRepository: MfChatChannelMessageRepository = JooqMfChatChannelMessageRepository(dsl)
         val duelRepository: MfDuelRepository = JooqMfDuelRepository(dsl)
         val duelInviteRepository: MfDuelInviteRepository = JooqMfDuelInviteRepository(dsl)
+        val warEndOutboxRepository: WarEndOutboxRepository = JooqWarEndOutboxRepository(dsl)
 
         val playerService = MfPlayerService(this, playerRepository)
         val factionService = MfFactionService(this, factionRepository)
@@ -247,7 +250,8 @@ class MedievalFactions : JavaPlugin() {
             potionService,
             teleportService,
             mapService,
-            approvalRequestService
+            approvalRequestService,
+            warEndOutboxRepository
         )
         setupRpkLockService()
 

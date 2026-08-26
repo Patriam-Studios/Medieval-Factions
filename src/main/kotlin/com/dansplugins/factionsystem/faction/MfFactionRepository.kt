@@ -1,5 +1,6 @@
 package com.dansplugins.factionsystem.faction
 
+import com.dansplugins.factionsystem.api.WarEndNotice
 import com.dansplugins.factionsystem.player.MfPlayerId
 
 interface MfFactionRepository {
@@ -46,5 +47,28 @@ interface MfFactionRepository {
         return upsertAll(factions, departedLockOwners)
     }
 
+    /**
+     * The transactional variant used by faction lifecycle code that must publish durable war ends.
+     * Persistent implementations return notices written in the same transaction as the cascade.
+     */
+    fun upsertAllAndDeleteWithWarEnds(
+        factions: List<MfFaction>,
+        deletedFactions: List<MfFaction>,
+        departedLockOwners: Set<MfPlayerId>
+    ): FactionBatchCommit = FactionBatchCommit(
+        upsertAllAndDelete(factions, deletedFactions, departedLockOwners),
+        emptyList()
+    )
+
     fun delete(factionId: MfFactionId)
+
+    fun deleteWithWarEnds(factionId: MfFactionId): List<WarEndNotice> {
+        delete(factionId)
+        return emptyList()
+    }
 }
+
+data class FactionBatchCommit(
+    val factions: List<MfFaction>,
+    val warEnds: List<WarEndNotice>
+)

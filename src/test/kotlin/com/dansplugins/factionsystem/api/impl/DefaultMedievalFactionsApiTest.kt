@@ -14,6 +14,8 @@ import com.dansplugins.factionsystem.faction.flag.MfFlagValues
 import com.dansplugins.factionsystem.faction.flag.MfFlags
 import com.dansplugins.factionsystem.faction.permission.MfFactionPermissions
 import com.dansplugins.factionsystem.faction.role.MfFactionRoles
+import com.dansplugins.factionsystem.failure.ServiceFailure
+import com.dansplugins.factionsystem.failure.ServiceFailureType.RULES_VIOLATION
 import com.dansplugins.factionsystem.lang.Language
 import com.dansplugins.factionsystem.player.MfPlayer
 import com.dansplugins.factionsystem.player.MfPlayerId
@@ -26,10 +28,13 @@ import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.AT_W
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.LIEGE
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.VASSAL
 import com.dansplugins.factionsystem.service.Services
+import dev.forkhandles.result4k.Failure
 import dev.forkhandles.result4k.Success
 import org.bukkit.Chunk
+import org.bukkit.Server
 import org.bukkit.World
 import org.bukkit.configuration.file.FileConfiguration
+import org.bukkit.plugin.PluginManager
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -64,6 +69,9 @@ class DefaultMedievalFactionsApiTest {
     @BeforeEach
     fun setUp() {
         plugin = mock(MedievalFactions::class.java)
+        val server = mock(Server::class.java)
+        `when`(plugin.server).thenReturn(server)
+        `when`(server.pluginManager).thenReturn(mock(PluginManager::class.java))
         config = mock(FileConfiguration::class.java)
         `when`(plugin.config).thenReturn(config)
         `when`(plugin.language).thenReturn(mock(Language::class.java, RETURNS_SMART_NULLS))
@@ -118,6 +126,27 @@ class DefaultMedievalFactionsApiTest {
     @Test
     fun getFactionReturnsNullForUnknownFaction() {
         assertNull(api.getFaction(FactionId("does-not-exist")))
+    }
+
+    @Test
+    fun warPairIsNotEstablishedWithNoDirectionalRows() {
+        stubWarRows("a", "b", forward = false, reverse = false)
+
+        assertFalse(api.isWarPairEstablished(FactionId("a"), FactionId("b")))
+    }
+
+    @Test
+    fun warPairIsNotEstablishedWithOnlyOneDirectionalRow() {
+        stubWarRows("a", "b", forward = true, reverse = false)
+
+        assertFalse(api.isWarPairEstablished(FactionId("a"), FactionId("b")))
+    }
+
+    @Test
+    fun warPairIsEstablishedOnlyWhenBothDirectionalRowsExist() {
+        stubWarRows("a", "b", forward = true, reverse = true)
+
+        assertTrue(api.isWarPairEstablished(FactionId("a"), FactionId("b")))
     }
 
     @Test
@@ -302,158 +331,64 @@ class DefaultMedievalFactionsApiTest {
         )
     }
 
-    /**
-     * The reason [DefaultMedievalFactionsApi.layDownArms] exists: the caller's rows go, the other
-     * side's stay, and the war is still on. A consumer told this is peace would announce one that has
-     * not happened.
-     */
+    /** The adapter preserves the service's first-request outcome without re-reading mutable rows. */
     @Test
-    fun layDownArmsReportsAPeaceRequestWhileTheOtherSideStillHoldsItsHalf() {
-        val ours = atWar("a", "b")
-        atWar("b", "a")
-
-        val outcome = api.layDownArms(FactionId("a"), FactionId("b"))
-
-        assertTrue(outcome.isSuccess)
-        assertEquals(PeaceOutcome.PEACE_REQUESTED, outcome.get())
-        verify(relationshipService).delete(ours.id)
-    }
-
-    /** The second half of the handshake: the last row goes, so the war is over. */
-    @Test
-    fun layDownArmsReportsPeaceWhenTheLastRowGoes() {
-        val ours = atWar("a", "b")
-
-        val outcome = api.layDownArms(FactionId("a"), FactionId("b"))
-
-        assertTrue(outcome.isSuccess)
-        assertEquals(PeaceOutcome.PEACE_MADE, outcome.get())
-        verify(relationshipService).delete(ours.id)
-    }
-
-    @Test
-    fun layDownArmsFailsWhenNeitherSideIsAtWar() {
+    fun layDownArmsDelegatesThePeaceRequestOutcome() {
         existingFaction("a")
         existingFaction("b")
-
-        val outcome = api.layDownArms(FactionId("a"), FactionId("b"))
-
-        assertTrue(outcome.isFailure)
-        assertEquals("Factions are not at war", outcome.errorMessage)
-        // Reading both sides is the whole of the work here: nothing was deleted.
-        verify(relationshipService).getRelationships(MfFactionId("a"), MfFactionId("b"))
-        verify(relationshipService).getRelationships(MfFactionId("b"), MfFactionId("a"))
-        verifyNoMoreInteractions(relationshipService)
-    }
-
-    /**
-     * Distinct from "not at war", exactly as /f makepeace keeps them distinct. Telling a faction whose
-     * half is already down that there is no war would be the opposite of the truth: the other side is
-     * still at war with it.
-     */
-    @Test
-    fun layDownArmsSaysPeaceIsAlreadyRequestedWhenOnlyTheOtherSideHoldsRows() {
-        val theirs = atWar("b", "a")
-
-        val outcome = api.layDownArms(FactionId("a"), FactionId("b"))
-
-        assertTrue(outcome.isFailure)
-        assertTrue(outcome.errorMessage!!.contains("already been requested"))
-        // Their half is emphatically not the caller's to lay down.
-        verify(relationshipService, never()).delete(theirs.id)
-    }
-
-    /**
-     * The war goes and nothing else does. Two factions hold more than one row against each other all
-     * the time, and only the AT_WAR ones are a peace's business: an alliance is not the war's to end,
-     * and a vassalage row is a House's place in the title ladder.
-     *
-     * Guards the AT_WAR filter on the caller's own rows. Drop it and the alliance and the vassalage go
-     * down with the war, silently, on a green build.
-     */
-    @Test
-    fun layDownArmsDeletesTheWarRowAndLeavesTheAllianceAndVassalageStanding() {
-        val ours = relationships("a", "b", AT_WAR, ALLY, VASSAL)
-
-        val outcome = api.layDownArms(FactionId("a"), FactionId("b"))
-
-        assertTrue(outcome.isSuccess)
-        assertEquals(PeaceOutcome.PEACE_MADE, outcome.get())
-        verify(relationshipService).delete(ours.getValue(AT_WAR).id)
-        assertNotDeleted(ours - AT_WAR)
-    }
-
-    /**
-     * The same on the PEACE_REQUESTED side, where the other faction is still at war and holds rows of
-     * its own. Neither side's non-war rows are touched, and the other side's rows are not the caller's
-     * to touch at all.
-     */
-    @Test
-    fun layDownArmsWithMixedRowsOnBothSidesRequestsPeaceAndDeletesOnlyOurWar() {
-        val ours = relationships("a", "b", AT_WAR, ALLY)
-        val theirs = relationships("b", "a", AT_WAR, LIEGE)
+        `when`(relationshipService.layDownArms(MfFactionId("a"), MfFactionId("b")))
+            .thenReturn(Success(PeaceOutcome.PEACE_REQUESTED))
 
         val outcome = api.layDownArms(FactionId("a"), FactionId("b"))
 
         assertTrue(outcome.isSuccess)
         assertEquals(PeaceOutcome.PEACE_REQUESTED, outcome.get())
-        verify(relationshipService).delete(ours.getValue(AT_WAR).id)
-        assertNotDeleted(ours - AT_WAR)
-        assertNotDeleted(theirs)
+        verify(relationshipService).layDownArms(MfFactionId("a"), MfFactionId("b"))
     }
 
-    /**
-     * Guards the AT_WAR filter on the OTHER side's rows, which decides which of the two outcomes is
-     * reported. A liege that has laid its war down is at peace with its vassal, and being owed homage
-     * is not a war still running: reporting PEACE_REQUESTED here would leave a consumer waiting on a
-     * second half that nobody owes.
-     */
+    /** The adapter also preserves the service's final-request outcome. */
     @Test
-    fun layDownArmsReportsPeaceWhenTheOtherSideOnlyHoldsVassalageAndAllianceRows() {
-        val ours = relationships("a", "b", AT_WAR)
-        val theirs = relationships("b", "a", VASSAL, ALLY)
+    fun layDownArmsDelegatesThePeaceMadeOutcome() {
+        existingFaction("a")
+        existingFaction("b")
+        `when`(relationshipService.layDownArms(MfFactionId("a"), MfFactionId("b")))
+            .thenReturn(Success(PeaceOutcome.PEACE_MADE))
 
         val outcome = api.layDownArms(FactionId("a"), FactionId("b"))
 
         assertTrue(outcome.isSuccess)
         assertEquals(PeaceOutcome.PEACE_MADE, outcome.get())
-        verify(relationshipService).delete(ours.getValue(AT_WAR).id)
-        assertNotDeleted(theirs)
+        verify(relationshipService).layDownArms(MfFactionId("a"), MfFactionId("b"))
     }
 
-    /**
-     * Allies are not at war, so there is no war to lay down and nothing to delete. Both filters answer
-     * for this one: without the caller's, an ally asking for peace would have its alliance deleted and
-     * be told peace was made.
-     */
     @Test
-    fun layDownArmsFailsAsNotAtWarWhenTheOnlyRowsAreAlliancesAndVassalage() {
-        val ours = relationships("a", "b", ALLY, LIEGE)
-        val theirs = relationships("b", "a", ALLY, VASSAL)
+    fun layDownArmsMapsAServiceFailureWithoutRetryingOutsideTheMutationLock() {
+        existingFaction("a")
+        existingFaction("b")
+        val failure = ServiceFailure(
+            RULES_VIOLATION,
+            "Faction a has already laid its half of the war down",
+            IllegalStateException("already requested")
+        )
+        `when`(relationshipService.layDownArms(MfFactionId("a"), MfFactionId("b")))
+            .thenReturn(Failure(failure))
 
         val outcome = api.layDownArms(FactionId("a"), FactionId("b"))
 
         assertTrue(outcome.isFailure)
-        assertEquals("Factions are not at war", outcome.errorMessage)
-        assertNotDeleted(ours)
-        assertNotDeleted(theirs)
+        assertEquals(failure.message, outcome.errorMessage)
+        verify(relationshipService).layDownArms(MfFactionId("a"), MfFactionId("b"))
     }
 
-    /**
-     * The already-requested branch has to stay reachable when the other side's remaining war row sits
-     * alongside rows of other types, since that branch is chosen by the same filter.
-     */
     @Test
-    fun layDownArmsSaysPeaceIsAlreadyRequestedWhenOurOnlyRemainingRowIsAnAlliance() {
-        val ours = relationships("a", "b", ALLY)
-        val theirs = relationships("b", "a", AT_WAR, VASSAL)
+    fun layDownArmsRejectsAnUnknownFactionBeforeEnteringTheRelationshipMutation() {
+        existingFaction("a")
 
-        val outcome = api.layDownArms(FactionId("a"), FactionId("b"))
+        val outcome = api.layDownArms(FactionId("a"), FactionId("missing"))
 
         assertTrue(outcome.isFailure)
-        assertTrue(outcome.errorMessage!!.contains("already been requested"))
-        assertNotDeleted(ours)
-        assertNotDeleted(theirs)
+        assertEquals("No faction with id missing", outcome.errorMessage)
+        verify(relationshipService, never()).layDownArms(MfFactionId("a"), MfFactionId("missing"))
     }
 
     /**
@@ -545,6 +480,26 @@ class DefaultMedievalFactionsApiTest {
             .thenReturn(rows.values.toList())
         rows.values.forEach { row -> `when`(relationshipService.delete(row.id)).thenReturn(Success(Unit)) }
         return rows
+    }
+
+    private fun stubWarRows(holder: String, target: String, forward: Boolean, reverse: Boolean) {
+        fun rows(from: String, to: String, present: Boolean) =
+            if (present) {
+                listOf(
+                    MfFactionRelationship(
+                        factionId = MfFactionId(from),
+                        targetId = MfFactionId(to),
+                        type = AT_WAR
+                    )
+                )
+            } else {
+                emptyList()
+            }
+
+        `when`(relationshipService.getRelationships(MfFactionId(holder), MfFactionId(target)))
+            .thenReturn(rows(holder, target, forward))
+        `when`(relationshipService.getRelationships(MfFactionId(target), MfFactionId(holder)))
+            .thenReturn(rows(target, holder, reverse))
     }
 
     /** Asserts none of [rows] was deleted, naming the type in the failure so a break reads plainly. */

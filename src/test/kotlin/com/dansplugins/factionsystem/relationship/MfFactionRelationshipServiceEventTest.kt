@@ -2,10 +2,16 @@ package com.dansplugins.factionsystem.relationship
 
 import com.dansplugins.factionsystem.MedievalFactions
 import com.dansplugins.factionsystem.api.FactionId
+import com.dansplugins.factionsystem.api.PeaceOutcome
+import com.dansplugins.factionsystem.api.WarEndNotice
+import com.dansplugins.factionsystem.api.WarEndReason
+import com.dansplugins.factionsystem.api.event.FactionPeaceRequestedEvent
 import com.dansplugins.factionsystem.api.event.FactionWarStartEvent
 import com.dansplugins.factionsystem.event.relationship.RelationshipCreatedEvent
 import com.dansplugins.factionsystem.event.relationship.RelationshipDeletedEvent
 import com.dansplugins.factionsystem.faction.MfFactionId
+import dev.forkhandles.result4k.Failure
+import dev.forkhandles.result4k.Success
 import org.bukkit.Server
 import org.bukkit.event.Event
 import org.bukkit.plugin.PluginManager
@@ -17,7 +23,9 @@ import org.mockito.ArgumentMatchers.any
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
+import java.time.Instant
 import java.util.Collections
+import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -97,6 +105,38 @@ class MfFactionRelationshipServiceEventTest {
             events.none { it is RelationshipCreatedEvent },
             "a failed repository upsert must not publish a committed creation"
         )
+    }
+
+    @Test
+    fun factionCascadeAttachesDurableNoticeOnlyToAWarRow() {
+        val doomed = MfFactionId("doomed")
+        val survivor = MfFactionId("survivor")
+        service.save(
+            MfFactionRelationship(
+                factionId = doomed,
+                targetId = survivor,
+                type = MfFactionRelationshipType.ALLY
+            )
+        )
+        service.save(war(doomed.value, survivor.value))
+        events.clear()
+        val ids = listOf(doomed.value, survivor.value).sorted()
+        val notice = WarEndNotice(
+            UUID.randomUUID(),
+            FactionId(ids[0]),
+            FactionId(ids[1]),
+            WarEndReason.FACTION_DISBANDED,
+            FactionId(doomed.value),
+            Instant.parse("2026-08-25T19:17:03Z")
+        )
+
+        service.evictForDeletedFaction(doomed, listOf(notice))
+
+        val deleted = events.filterIsInstance<RelationshipDeletedEvent>()
+        assertEquals(2, deleted.size)
+        val carryingNotice = deleted.single { it.warEndNotice != null }
+        assertEquals(MfFactionRelationshipType.AT_WAR, carryingNotice.relationship.type)
+        assertEquals(notice, carryingNotice.warEndNotice)
     }
 
     @Test
@@ -304,6 +344,124 @@ class MfFactionRelationshipServiceEventTest {
                 it.type == MfFactionRelationshipType.AT_WAR
             }
         )
+    }
+
+    @Test
+    fun layDownArmsCommitsTheRequestBeforePublishingItsAttributionEvent() {
+        val requester = MfFactionId("requester")
+        val opponent = MfFactionId("opponent")
+        val ours = war(requester.value, opponent.value)
+        val theirs = war(opponent.value, requester.value)
+        service.save(ours)
+        service.save(theirs)
+        events.clear()
+
+        val result = service.layDownArms(requester, opponent)
+
+        assertTrue(result is Success)
+        assertEquals(PeaceOutcome.PEACE_REQUESTED, (result as Success).value)
+        assertEquals(null, service.getRelationship(ours.id))
+        assertEquals(theirs, service.getRelationship(theirs.id))
+        val relevant = events.filter {
+            it is FactionPeaceRequestedEvent || it is RelationshipDeletedEvent
+        }
+        assertEquals(
+            listOf(FactionPeaceRequestedEvent::class, RelationshipDeletedEvent::class),
+            relevant.map { it::class }
+        )
+        val request = relevant.first() as FactionPeaceRequestedEvent
+        assertEquals(FactionId(requester.value), request.requestingFaction)
+        assertEquals(FactionId(opponent.value), request.otherFaction)
+        assertEquals(PeaceOutcome.PEACE_REQUESTED, request.outcome)
+        assertTrue(request.isAsynchronous)
+    }
+
+    @Test
+    fun layingDownTheLastWarRowReportsPeaceBeforeTheGenericDeleteEvent() {
+        val requester = MfFactionId("final-requester")
+        val opponent = MfFactionId("waiting-opponent")
+        val ours = war(requester.value, opponent.value)
+        service.save(ours)
+        events.clear()
+
+        val result = service.layDownArms(requester, opponent)
+
+        assertTrue(result is Success)
+        assertEquals(PeaceOutcome.PEACE_MADE, (result as Success).value)
+        val relevant = events.filter {
+            it is FactionPeaceRequestedEvent || it is RelationshipDeletedEvent
+        }
+        assertEquals(
+            listOf(FactionPeaceRequestedEvent::class, RelationshipDeletedEvent::class),
+            relevant.map { it::class }
+        )
+        assertEquals(PeaceOutcome.PEACE_MADE, (relevant.first() as FactionPeaceRequestedEvent).outcome)
+    }
+
+    @Test
+    fun layDownArmsDeletesOnlyTheRequestersWarRows() {
+        val requester = MfFactionId("mixed-requester")
+        val opponent = MfFactionId("mixed-opponent")
+        val war = war(requester.value, opponent.value)
+        val alliance = MfFactionRelationship(
+            factionId = requester,
+            targetId = opponent,
+            type = MfFactionRelationshipType.ALLY
+        )
+        val vassalage = MfFactionRelationship(
+            factionId = opponent,
+            targetId = requester,
+            type = MfFactionRelationshipType.VASSAL
+        )
+        service.save(war)
+        service.save(alliance)
+        service.save(vassalage)
+        events.clear()
+
+        val result = service.layDownArms(requester, opponent)
+
+        assertTrue(result is Success)
+        assertEquals(PeaceOutcome.PEACE_MADE, (result as Success).value)
+        assertEquals(null, service.getRelationship(war.id))
+        assertEquals(alliance, service.getRelationship(alliance.id))
+        assertEquals(vassalage, service.getRelationship(vassalage.id))
+        assertEquals(
+            listOf(war),
+            events.filterIsInstance<RelationshipDeletedEvent>().map { it.relationship }
+        )
+    }
+
+    @Test
+    fun layDownArmsDistinguishesNoWarFromAnAlreadyRecordedRequest() {
+        val requester = MfFactionId("repeat-requester")
+        val opponent = MfFactionId("repeat-opponent")
+        service.save(war(opponent.value, requester.value))
+        events.clear()
+
+        val alreadyRequested = service.layDownArms(requester, opponent)
+        val notAtWar = service.layDownArms(MfFactionId("nobody-a"), MfFactionId("nobody-b"))
+
+        assertTrue(alreadyRequested is Failure)
+        assertTrue((alreadyRequested as Failure).reason.message.contains("already laid its half"))
+        assertTrue(notAtWar is Failure)
+        assertEquals("Factions are not at war", (notAtWar as Failure).reason.message)
+        assertTrue(events.none { it is FactionPeaceRequestedEvent || it is RelationshipDeletedEvent })
+    }
+
+    @Test
+    fun failedPeaceDeleteLeavesTheRowRetryableAndPublishesNoAttribution() {
+        val requester = MfFactionId("failed-requester")
+        val opponent = MfFactionId("failed-opponent")
+        val ours = war(requester.value, opponent.value)
+        service.save(ours)
+        events.clear()
+        repository.failDelete = true
+
+        val result = service.layDownArms(requester, opponent)
+
+        assertTrue(result is Failure)
+        assertEquals(ours, service.getRelationship(ours.id))
+        assertTrue(events.none { it is FactionPeaceRequestedEvent || it is RelationshipDeletedEvent })
     }
 
     private fun war(holder: String, target: String) = MfFactionRelationship(

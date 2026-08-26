@@ -15,6 +15,7 @@ import com.dansplugins.factionsystem.player.MfPlayerService
 import com.dansplugins.factionsystem.potion.MfPotionService
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipService
 import com.dansplugins.factionsystem.teleport.MfTeleportService
+import com.dansplugins.factionsystem.warend.WarEndOutboxRepository
 
 class Services(
     val playerService: MfPlayerService,
@@ -31,5 +32,6 @@ class Services(
     val potionService: MfPotionService,
     val teleportService: MfTeleportService,
     val mapService: MapService?,
-    val approvalRequestService: MfApprovalRequestService
+    val approvalRequestService: MfApprovalRequestService,
+    val warEndOutboxRepository: WarEndOutboxRepository
 )

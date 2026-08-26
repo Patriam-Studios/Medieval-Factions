@@ -1,9 +1,11 @@
 package com.dansplugins.factionsystem.command.faction.makepeace
 
 import com.dansplugins.factionsystem.MedievalFactions
+import com.dansplugins.factionsystem.api.PeaceOutcome
 import com.dansplugins.factionsystem.faction.MfFaction
 import com.dansplugins.factionsystem.player.MfPlayer
-import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.AT_WAR
+import dev.forkhandles.result4k.Failure
+import dev.forkhandles.result4k.Success
 import dev.forkhandles.result4k.onFailure
 import org.bukkit.ChatColor.GREEN
 import org.bukkit.ChatColor.RED
@@ -60,24 +62,25 @@ class MfFactionMakePeaceCommand(private val plugin: MedievalFactions) : CommandE
                     return@Runnable
                 }
                 val factionRelationshipService = plugin.services.factionRelationshipService
-                val existingRelationships = factionRelationshipService.getRelationships(faction.id, target.id)
-                val reverseRelationships = factionRelationshipService.getRelationships(target.id, faction.id)
-                if (existingRelationships.none { it.type == AT_WAR }) {
-                    if (reverseRelationships.any { it.type == AT_WAR }) {
-                        sender.sendMessage("$RED${plugin.language["CommandFactionMakePeaceAlreadyRequestedPeace"]}")
-                    } else {
-                        sender.sendMessage("$RED${plugin.language["CommandFactionMakePeaceNotAtWar"]}")
-                    }
-                    return@Runnable
-                }
-                existingRelationships.filter { it.type == AT_WAR }.forEach { relationship ->
-                    factionRelationshipService.delete(relationship.id).onFailure {
-                        sender.sendMessage("$RED${plugin.language["CommandFactionMakePeaceFailedToDeleteRelationship"]}")
-                        plugin.logger.log(Level.SEVERE, "Failed to delete faction relationship: ${it.reason.message}", it.reason.cause)
+                val outcome = when (val result = factionRelationshipService.layDownArms(faction.id, target.id)) {
+                    is Success -> result.value
+                    is Failure -> {
+                        if (result.reason.message.contains("already laid its half")) {
+                            sender.sendMessage("$RED${plugin.language["CommandFactionMakePeaceAlreadyRequestedPeace"]}")
+                        } else if (result.reason.message == "Factions are not at war") {
+                            sender.sendMessage("$RED${plugin.language["CommandFactionMakePeaceNotAtWar"]}")
+                        } else {
+                            sender.sendMessage("$RED${plugin.language["CommandFactionMakePeaceFailedToDeleteRelationship"]}")
+                            plugin.logger.log(
+                                Level.SEVERE,
+                                "Failed to lay down faction relationship: ${result.reason.message}",
+                                result.reason.cause
+                            )
+                        }
                         return@Runnable
                     }
                 }
-                if (reverseRelationships.any { it.type == AT_WAR }) {
+                if (outcome == PeaceOutcome.PEACE_REQUESTED) {
                     sender.sendMessage("$GREEN${plugin.language["CommandFactionMakePeaceRequested"]}")
                     plugin.server.scheduler.runTask(
                         plugin,

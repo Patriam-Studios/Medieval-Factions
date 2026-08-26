@@ -2,6 +2,10 @@ package com.dansplugins.factionsystem.relationship
 
 import com.dansplugins.factionsystem.MedievalFactions
 import com.dansplugins.factionsystem.api.FactionId
+import com.dansplugins.factionsystem.api.PeaceOutcome
+import com.dansplugins.factionsystem.api.WarEndNotice
+import com.dansplugins.factionsystem.api.WarEndReason
+import com.dansplugins.factionsystem.api.event.FactionPeaceRequestedEvent
 import com.dansplugins.factionsystem.api.event.FactionWarStartEvent
 import com.dansplugins.factionsystem.event.relationship.RelationshipCreateEvent
 import com.dansplugins.factionsystem.event.relationship.RelationshipCreatedEvent
@@ -17,7 +21,9 @@ import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.ALLY
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.AT_WAR
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.LIEGE
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.VASSAL
+import dev.forkhandles.result4k.Failure
 import dev.forkhandles.result4k.Result4k
+import dev.forkhandles.result4k.Success
 import dev.forkhandles.result4k.mapFailure
 import dev.forkhandles.result4k.onFailure
 import dev.forkhandles.result4k.resultFrom
@@ -217,8 +223,79 @@ class MfFactionRelationshipService(private val plugin: MedievalFactions, private
         }
     }
 
+    /**
+     * Remove one faction's complete half of a war as one serialised voluntary act.
+     *
+     * The stable peace-request event is published after the final repository/cache deletion but
+     * before that row's generic post-delete event. ApiRelationshipListener cannot therefore queue
+     * (or a main thread drain) FactionWarEndedEvent ahead of the attribution event.
+     */
+    fun layDownArms(
+        faction: MfFactionId,
+        otherFaction: MfFactionId
+    ): Result4k<PeaceOutcome, ServiceFailure> = mutationLock.withLock {
+        val ownRows = getRelationships(faction, otherFaction).filter { it.type == AT_WAR }
+        val theirRows = getRelationships(otherFaction, faction).filter { it.type == AT_WAR }
+        if (ownRows.isEmpty()) {
+            val message = if (theirRows.isEmpty()) {
+                "Factions are not at war"
+            } else {
+                "Faction ${faction.value} has already laid its half of the war down; peace has " +
+                    "already been requested from faction ${otherFaction.value}"
+            }
+            return@withLock Failure(
+                ServiceFailure(
+                    ServiceFailureType.RULES_VIOLATION,
+                    message,
+                    IllegalStateException(message)
+                )
+            )
+        }
+
+        val outcome = if (theirRows.isEmpty()) PeaceOutcome.PEACE_MADE else PeaceOutcome.PEACE_REQUESTED
+        ownRows.forEachIndexed { index, relationship ->
+            val publishRequest = if (index == ownRows.lastIndex) {
+                {
+                    ChildMutationCallbackGuard.callEvent(
+                        plugin,
+                        FactionPeaceRequestedEvent(
+                            FactionId(faction.value),
+                            FactionId(otherFaction.value),
+                            outcome,
+                            !plugin.server.isPrimaryThread
+                        )
+                    )
+                }
+            } else {
+                null
+            }
+            when (
+                val deleted = deleteLocked(
+                    relationship.id,
+                    WarEndReason.VOLUNTARY_PEACE,
+                    faction,
+                    publishRequest
+                )
+            ) {
+                is Failure -> return@withLock deleted
+                is Success -> Unit
+            }
+        }
+        Success(outcome)
+    }
+
     @JvmName("deleteRelationshipByRelationshipId")
     fun delete(id: MfFactionRelationshipId): Result4k<Unit, ServiceFailure> = mutationLock.withLock {
+        deleteLocked(id, WarEndReason.RELATIONSHIP_REMOVED, null)
+    }
+
+    /** Caller must hold [mutationLock]. */
+    private fun deleteLocked(
+        id: MfFactionRelationshipId,
+        warEndReason: WarEndReason,
+        actingFaction: MfFactionId?,
+        afterCommitBeforeDeletedEvent: (() -> Unit)? = null
+    ): Result4k<Unit, ServiceFailure> =
         resultFrom {
             val live = relationshipsById[id]
             require(live == null || live.factionId !in deletingFactions) {
@@ -232,20 +309,24 @@ class MfFactionRelationshipService(private val plugin: MedievalFactions, private
             if (event.isCancelled) {
                 throw EventCancelledException("Event cancelled")
             }
-            val result = repository.delete(id)
+            val result = repository.deleteWithWarEnd(id, warEndReason, actingFaction)
             val deleted = relationshipsById.remove(id)
             deleted?.let(::unindex)
             if (deleted != null) {
+                afterCommitBeforeDeletedEvent?.invoke()
                 ChildMutationCallbackGuard.callEvent(
                     plugin,
-                    RelationshipDeletedEvent(deleted, !plugin.server.isPrimaryThread)
+                    RelationshipDeletedEvent(
+                        deleted,
+                        !plugin.server.isPrimaryThread,
+                        result.warEndNotice
+                    )
                 )
             }
-            return@resultFrom result
+            return@resultFrom Unit
         }.mapFailure { exception ->
             ServiceFailure(exception.toServiceFailureType(), "Service error: ${exception.message}", exception)
         }
-    }
 
     /**
      * Evict relationships deleted by the faction repository's foreign-key cascade.
@@ -255,7 +336,10 @@ class MfFactionRelationshipService(private val plugin: MedievalFactions, private
      * stable war API. Remove the complete set before firing any event so the first war-row event sees
      * the true resulting state and emits exactly one end for a mirrored pair.
      */
-    fun evictForDeletedFaction(factionId: MfFactionId) = mutationLock.withLock {
+    fun evictForDeletedFaction(
+        factionId: MfFactionId,
+        warEnds: List<WarEndNotice> = emptyList()
+    ) = mutationLock.withLock {
         val removed = relationshipsById.values.filter {
             it.factionId == factionId || it.targetId == factionId
         }
@@ -263,10 +347,23 @@ class MfFactionRelationshipService(private val plugin: MedievalFactions, private
             relationshipsById.remove(relationship.id)
             unindex(relationship)
         }
+        val pendingWarEnds = warEnds.associateByTo(linkedMapOf()) { notice ->
+            notice.faction.value to notice.otherFaction.value
+        }
         removed.forEach { relationship ->
+            val pair = listOf(relationship.factionId.value, relationship.targetId.value).sorted()
+            val notice = if (relationship.type == AT_WAR) {
+                pendingWarEnds.remove(pair[0] to pair[1])
+            } else {
+                null
+            }
             ChildMutationCallbackGuard.callEvent(
                 plugin,
-                RelationshipDeletedEvent(relationship, !plugin.server.isPrimaryThread)
+                RelationshipDeletedEvent(
+                    relationship,
+                    !plugin.server.isPrimaryThread,
+                    notice
+                )
             )
         }
     }

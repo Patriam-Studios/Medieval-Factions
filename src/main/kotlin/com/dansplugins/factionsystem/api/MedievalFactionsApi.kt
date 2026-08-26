@@ -48,12 +48,17 @@ import java.util.UUID
  *
  * ### Events do not follow the same rule as calls, and the exception matters
  *
- * Past-tense notification events in the `event` package are delivered on the **main thread**, on
- * the next tick, so their handlers may touch the world freely. Cancellable pre-commit gates are the
- * deliberate exception: [event.FactionCreateEvent], [event.FactionClaimAttemptEvent] and
- * [event.FactionWarStartEvent] are fired **inline and may be asynchronous**, because a veto has to
- * reach MF before it persists anything. MF's command chains perform these writes on async tasks, so
- * in ordinary play those events *are* async.
+ * Past-tense notification events in the `event` package are normally delivered on the **main
+ * thread**, on the next tick, so their handlers may touch the world freely. Two ordering-critical
+ * events are post-commit but fire inline with an honest asynchronous flag:
+ * [event.FactionPeaceRequestedEvent] records each request before war-end processing, and
+ * [event.FactionWarEndedCommittedEvent] reports the final committed war-row deletion before the
+ * legacy main-thread [event.FactionWarEndedEvent] is queued.
+ *
+ * Cancellable pre-commit gates are also inline and may be asynchronous:
+ * [event.FactionCreateEvent], [event.FactionClaimAttemptEvent] and [event.FactionWarStartEvent]. A
+ * veto has to reach MF before it persists anything. MF's command chains perform these writes on
+ * async tasks, so in ordinary play those events *are* async.
  *
  * Two consequences for anything handling a pre-commit gate. A handler must not assume it can touch
  * the world, and the proposed change does not exist yet. For faction creation specifically, the row
@@ -115,6 +120,21 @@ interface MedievalFactionsApi {
      * current should listen for the lifecycle events rather than re-reading this on a timer.
      */
     fun getFactions(): List<FactionView>
+
+    /**
+     * Whether the war between [faction] and [otherFaction] is fully established in both directions.
+     *
+     * MedievalFactions represents one war as two mirrored `AT_WAR` relationship rows. The broader
+     * [FactionView.isAtWarWith] read deliberately answers true when either row exists, which is right
+     * for gameplay but cannot distinguish a completed declaration from the partial state left when
+     * only the first write commits. Consumers that spend one-shot authorization after a declaration
+     * must use this read and spend only when it returns true.
+     *
+     * Returns false for the same faction, unknown factions, no war, and either one-direction-only
+     * state. It reads only the concurrent in-memory relationship index, performs no database or
+     * Bukkit-world work, and is safe to call from any thread, including an asynchronous war event.
+     */
+    fun isWarPairEstablished(faction: FactionId, otherFaction: FactionId): Boolean
 
     /** The faction that owns the given chunk, or null if it is unclaimed. */
     fun getFactionAt(chunk: Chunk): FactionView?
@@ -240,6 +260,45 @@ interface MedievalFactionsApi {
      * In-memory, and safe from any thread.
      */
     fun getFlag(faction: FactionId, flag: String): String?
+
+    // --- Durable war-end delivery ---
+
+    /**
+     * Every war end this named consumer has not acknowledged yet, oldest first.
+     *
+     * MF inserts each [WarEndNotice] in the same database transaction that removes the final war
+     * row (or disbands a faction and cascades its rows). This closes the crash window inherent in a
+     * Bukkit event: if a server stops after the commit but before a listener saves its reaction, the
+     * notice remains here after restart.
+     *
+     * The delivery contract is at-least-once. Persist [WarEndNotice.id] atomically with the
+     * consumer's reaction, then call [acknowledgeWarEnd]. A crash before the acknowledgement returns
+     * the same id again, so applying an already-recorded id must be a no-op. Acknowledgements are
+     * scoped by [consumerId]; one plugin cannot hide a notice from another.
+     *
+     * For [WarEndReason.VOLUNTARY_PEACE], [WarEndNotice.actingFaction] is the final requester and
+     * [WarEndNotice.endedAt] is that request's commit time. That is the durable equivalent of a
+     * `FactionPeaceRequestedEvent` with `PeaceOutcome.PEACE_MADE`, allowing a consumer to combine it
+     * with an earlier stored request when deciding whether peace was mutual.
+     * [WarEndNotice.wasFullyEstablished] is producer-side proof that this exact war generation
+     * reached both directional rows. Consumers may use it to distinguish a rapid complete war from
+     * cleanup of a one-row interrupted declaration; they must not infer that distinction from event
+     * timing.
+     *
+     * This performs blocking JDBC and belongs off the main thread. [consumerId] must be 1-128 ASCII
+     * letters, digits, dots, colons, underscores or hyphens (a plugin name or namespaced key is a
+     * good choice). Database and validation failures are returned as a failed [ApiOutcome].
+     */
+    fun getUnacknowledgedWarEnds(consumerId: String): ApiOutcome<List<WarEndNotice>>
+
+    /**
+     * Mark one durable war-end notice delivered to [consumerId].
+     *
+     * Repeating an acknowledgement succeeds without adding another row. An unknown notice id
+     * fails, preventing a typo from masquerading as durable delivery. This performs blocking JDBC
+     * and belongs off the main thread; call it only after the consumer's own state is committed.
+     */
+    fun acknowledgeWarEnd(consumerId: String, noticeId: UUID): ApiResult
 
     // --- Mutations ---
     //
@@ -371,16 +430,15 @@ interface MedievalFactionsApi {
      *
      * ## Events, and what is fired before what
      *
-     * On [PeaceOutcome.PEACE_MADE], [event.FactionWarEndedEvent] is a post-commit notification. The
-     * relationship row is removed from the repository and live index first; only when neither
-     * direction remains does the bridge queue one ended event for the next main-thread turn. A failed
-     * delete therefore emits no stable event and remains retryable.
+     * Every success fires [event.FactionPeaceRequestedEvent] inline after every caller-owned war row
+     * has been removed. It records the voluntary act, so it fires for both outcomes. Because this
+     * write normally runs off-thread, that event may be asynchronous; its flag is honest.
      *
-     * On [PeaceOutcome.PEACE_REQUESTED] **nothing is fired at all.** MF publishes no event for a peace
-     * request -- `/f makepeace` announces one with two chat messages sent from the command body, and
-     * there is nothing a consumer could listen for -- and inventing one here would announce to
-     * third-party listeners something MF's own command does not. Announcing a request is the caller's
-     * job.
+     * On [PeaceOutcome.PEACE_MADE], [event.FactionWarEndedCommittedEvent] fires inline and
+     * [event.FactionWarEndedEvent] is queued for the main thread only after the live relationship
+     * re-read proves neither direction remains. The inline peace-request event is observed before
+     * both, which lets a consumer attribute the second request before concluding the war. A failed
+     * delete emits none of these stable events and remains retryable.
      *
      * **This sends no chat.** The command's four notifications to the two factions belong to the
      * command, not to the write, so a consumer that wants its realms told must tell them.
