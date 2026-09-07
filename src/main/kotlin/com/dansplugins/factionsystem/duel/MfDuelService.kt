@@ -9,6 +9,7 @@ import dev.forkhandles.result4k.mapFailure
 import dev.forkhandles.result4k.resultFrom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 
 class MfDuelService(
     private val plugin: MedievalFactions,
@@ -45,9 +46,11 @@ class MfDuelService(
     }
 
     fun save(duel: MfDuel) = resultFrom {
-        val result = duelRepo.upsert(duel)
-        duelsById[result.id] = result
-        return@resultFrom result
+        plugin.guardFixturePlayers(listOf(duel.challengerId.value, duel.challengedId.value)) {
+            val result = duelRepo.upsert(duel)
+            duelsById[result.id] = result
+            result
+        }
     }.mapFailure { exception ->
         ServiceFailure(exception.toServiceFailureType(), "Service error: ${exception.message}", exception)
     }
@@ -71,9 +74,11 @@ class MfDuelService(
     fun getInvitesByInviter(inviter: MfPlayerId) = duelInvites.filter { it.inviterId == inviter }
 
     fun save(invite: MfDuelInvite) = resultFrom {
-        val result = duelInviteRepo.upsert(invite)
-        duelInvites.add(result)
-        return@resultFrom result
+        plugin.guardFixturePlayers(listOf(invite.inviterId.value, invite.inviteeId.value)) {
+            val result = duelInviteRepo.upsert(invite)
+            duelInvites.add(result)
+            result
+        }
     }.mapFailure { exception ->
         ServiceFailure(exception.toServiceFailureType(), "Service error: ${exception.message}", exception)
     }

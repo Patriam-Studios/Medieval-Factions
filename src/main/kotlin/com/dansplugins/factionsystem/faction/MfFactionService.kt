@@ -37,6 +37,8 @@ import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.withLock
+import com.dansplugins.factionsystem.fixture.guardFixtureFaction
+import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 import kotlin.concurrent.write
 
 /**
@@ -128,6 +130,12 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
     fun getFaction(factionId: MfFactionId): MfFaction? = factionCacheLock.read { factionsById[factionId] }
 
     fun save(faction: MfFaction): Result4k<MfFaction, ServiceFailure> = resultFrom {
+        plugin.guardFixtureFaction(faction) { saveWithinFixtureBoundary(faction) }
+    }.mapFailure { exception ->
+        ServiceFailure(exception.toServiceFailureType(), "Service error: ${exception.message}", exception)
+    }
+
+    private fun saveWithinFixtureBoundary(faction: MfFaction): MfFaction {
         val plan = mutableListOf<SaveMutation>()
         val lifecycle = SaveLifecycle()
         var committed = false
@@ -136,7 +144,7 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
             val persisted = commit(plan)
             committed = true
             publishCommitted(plan, persisted)
-            return@resultFrom requireNotNull(persisted[faction.id])
+            return requireNotNull(persisted[faction.id])
         } catch (throwable: Throwable) {
             if (!committed) {
                 if (throwable is RepositoryCommitUncertain) {
@@ -154,8 +162,6 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
         } finally {
             releaseSaveLifecycle(lifecycle)
         }
-    }.mapFailure { exception ->
-        ServiceFailure(exception.toServiceFailureType(), "Service error: ${exception.message}", exception)
     }
 
     private data class SaveMutation(
@@ -568,6 +574,18 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
         destinationId: MfFactionId,
         expectedSourceMembers: Collection<MfPlayerId>
     ): Result4k<Unit, ServiceFailure> = resultFrom {
+        plugin.guardFixturePlayers(expectedSourceMembers.map { it.value }) {
+            transferAllMembersWithinFixtureBoundary(sourceId, destinationId, expectedSourceMembers)
+        }
+    }.mapFailure { exception ->
+        ServiceFailure(exception.toServiceFailureType(), "Service error: ${exception.message}", exception)
+    }
+
+    private fun transferAllMembersWithinFixtureBoundary(
+        sourceId: MfFactionId,
+        destinationId: MfFactionId,
+        expectedSourceMembers: Collection<MfPlayerId>
+    ) {
         require(sourceId != destinationId) { "Source and destination are the same faction" }
         val expectedRoster = expectedSourceMembers.toSet()
         require(expectedRoster.isNotEmpty()) { "The expected source roster is empty" }
@@ -644,7 +662,7 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
                     Runnable { mapService.scheduleUpdateClaims(source) }
                 )
             }
-            return@resultFrom Unit
+            return
         } catch (throwable: Throwable) {
             if (!committed && throwable !is RepositoryCommitUncertain) {
                 abortPrepared(plan)
@@ -659,8 +677,6 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
             releaseSaveLifecycle(lifecycle)
             endFactionDeletion(sourceId)
         }
-    }.mapFailure { exception ->
-        ServiceFailure(exception.toServiceFailureType(), "Service error: ${exception.message}", exception)
     }
 
     private fun commitAndDelete(

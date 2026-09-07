@@ -14,6 +14,7 @@ import org.bukkit.OfflinePlayer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Level.SEVERE
 import kotlin.collections.set
+import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 
 class MfPlayerService(private val plugin: MedievalFactions, private val playerRepository: MfPlayerRepository) {
 
@@ -59,6 +60,12 @@ class MfPlayerService(private val plugin: MedievalFactions, private val playerRe
     fun getPlayer(player: OfflinePlayer): MfPlayer? = getPlayer(MfPlayerId(player.uniqueId.toString()))
 
     fun save(player: MfPlayer): Result4k<MfPlayer, ServiceFailure> = resultFrom {
+        plugin.guardFixturePlayers(listOf(player.id.value)) { saveWithinFixtureBoundary(player) }
+    }.mapFailure { exception ->
+        ServiceFailure(exception.toServiceFailureType(), "Service error: ${exception.message}", exception)
+    }
+
+    private fun saveWithinFixtureBoundary(player: MfPlayer): MfPlayer {
         val result = playerRepository.upsert(player)
         playersById[result.id] = result
         val mapService = plugin.services.mapService
@@ -74,27 +81,31 @@ class MfPlayerService(private val plugin: MedievalFactions, private val playerRe
                 )
             }
         }
-        return@resultFrom result
-    }.mapFailure { exception ->
-        ServiceFailure(exception.toServiceFailureType(), "Service error: ${exception.message}", exception)
+        return result
+    }
+
+    internal fun evictDisposablePlayer(id: MfPlayerId) {
+        playersById.remove(id)
     }
 
     @JvmName("updatePlayerPower")
     fun updatePlayerPower(onlinePlayerIds: List<MfPlayerId>): Result4k<Unit, ServiceFailure> {
         return resultFrom {
-            playerRepository.increaseOnlinePlayerPower(onlinePlayerIds)
-            playerRepository.decreaseOfflinePlayerPower(onlinePlayerIds)
-            playersById.putAll(playerRepository.getPlayers().associateBy(MfPlayer::id))
-            val mapService = plugin.services.mapService
-            if (mapService != null && !plugin.config.getBoolean("dynmap.onlyRenderTerritoriesUponStartup")) {
-                val factionService = plugin.services.factionService
-                factionService.factions.forEach { faction ->
-                    plugin.server.scheduler.runTask(
-                        plugin,
-                        Runnable {
-                            mapService.scheduleUpdateClaims(faction)
-                        }
-                    )
+            plugin.guardFixturePlayers(emptyList()) {
+                playerRepository.increaseOnlinePlayerPower(onlinePlayerIds)
+                playerRepository.decreaseOfflinePlayerPower(onlinePlayerIds)
+                playersById.putAll(playerRepository.getPlayers().associateBy(MfPlayer::id))
+                val mapService = plugin.services.mapService
+                if (mapService != null && !plugin.config.getBoolean("dynmap.onlyRenderTerritoriesUponStartup")) {
+                    val factionService = plugin.services.factionService
+                    factionService.factions.forEach { faction ->
+                        plugin.server.scheduler.runTask(
+                            plugin,
+                            Runnable {
+                                mapService.scheduleUpdateClaims(faction)
+                            }
+                        )
+                    }
                 }
             }
         }.mapFailure { exception ->

@@ -10,6 +10,7 @@ import com.dansplugins.factionsystem.player.MfPlayer
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.ALLY
 import net.md_5.bungee.api.ChatColor
 import java.time.Instant
+import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 
 class MfChatService(private val plugin: MedievalFactions, private val repo: MfChatChannelMessageRepository) {
 
@@ -62,7 +63,9 @@ class MfChatService(private val plugin: MedievalFactions, private val repo: MfCh
         plugin.server.scheduler.runTaskAsynchronously(
             plugin,
             Runnable {
-                repo.insert(MfChatChannelMessage(Instant.now(), mfPlayer.id, faction.id, channel, message))
+                plugin.guardFixturePlayers(listOf(mfPlayer.id.value)) {
+                    repo.insert(MfChatChannelMessage(Instant.now(), mfPlayer.id, faction.id, channel, message))
+                }
             }
         )
         // Using console sender means that colour codes will come through in console

@@ -120,6 +120,8 @@ import kotlin.math.floor
 import kotlin.math.roundToInt
 
 class MedievalFactions : JavaPlugin() {
+    var disposableFixtureMutationFence: com.dansplugins.factionsystem.fixture.DisposableFixtureMutationFence? = null
+        private set
 
     private lateinit var dataSource: DataSource
 
@@ -275,6 +277,14 @@ class MedievalFactions : JavaPlugin() {
             warEndOutboxRepository
         )
         setupRpkLockService()
+
+        disposableFixtureMutationFence = com.dansplugins.factionsystem.fixture.DisposableFixtureMutationFence()
+        server.servicesManager.register(
+            com.dansplugins.factionsystem.api.DisposableFactionFixtureService::class.java,
+            com.dansplugins.factionsystem.fixture.DefaultDisposableFactionFixtureService(this, dsl),
+            this,
+            org.bukkit.plugin.ServicePriority.Normal
+        )
 
         server.servicesManager.register(
             com.dansplugins.factionsystem.api.MedievalFactionsApi::class.java,
