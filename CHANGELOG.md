@@ -73,6 +73,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   publishes no event for a peace request. Holding no rows while the other side holds some is reported
   as peace having already been requested, as the command reports it.
 
+#### Changed
+- **The Patriam fork now targets Minecraft 26.2 and Java 25.** Gradle, CI, release, development
+  container, and Docker builds use JDK 25 for Medieval Factions while retaining an isolated JDK 17
+  phase for the legacy Ponder 2.0.0 build.
+
 #### Fixed
 - **The test tier did not compile from clean.** The anonymous `FactionView` in
   `FactionHierarchyViewTest` never implemented `color`, and Kotlin's incremental compiler did not

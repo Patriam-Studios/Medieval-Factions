@@ -51,7 +51,7 @@ delete_lang_directory() {
 # Function: Copy the latest plugin JAR with timestamp check
 copy_latest_plugin_jar() {
     log "Copying the latest plugin JAR..."
-    local jarFile=$(find "$BUILD_DIR/MedievalFactions/build/libs" -name "*-all.jar" -type f -print -quit)
+    local jarFile=$(find "$BUILD_DIR/MedievalFactions/build/libs" -name "Medieval-Factions-*.jar" -type f -print -quit)
 
     if [ -z "$jarFile" ]; then
         log "ERROR: No plugin JAR file found in the build directory."

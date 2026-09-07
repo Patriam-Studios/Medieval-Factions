@@ -28,10 +28,7 @@ assignees: []
 ## Environment Details
 
 ### Java Version:
-- [ ] Java 8
-- [ ] Java 11
-- [ ] Java 16
-- [ ] Java 17
+- [ ] Java 25
 - [ ] Other (Specify: ___)
 
 ### Plugin Version:
@@ -45,7 +42,7 @@ assignees: []
 - [ ] Paper
 - [ ] Other (Specify: ___)
 
-Version: `___` (e.g., 1.21.11)
+Version: `___` (e.g., 26.2)
 
 ## Additional Context
 *Add any other context or relevant details about the issue.*

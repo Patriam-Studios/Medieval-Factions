@@ -7,6 +7,8 @@ Medieval Factions  é um sistema de mecânicas que permite a simulação de naç
 Este plugin esta sendo desenvolvido utilizando a API Do Spigot. Os usuários talvez tenham problemas utilizando este plugin se utilizarem outros softwares disponiveis, como o Paper.
 
 ## Instalação
+Este fork é destinado ao Minecraft 26.2 e requer Java 25 ou superior.
+
 1) Você pode baixar o Plugin [nesta página](https://www.spigotmc.org/resources/medieval-factions-sovereign-nation-simulator.79941/updates).
 
 2) Depois de baixado, coloque o arquivo jar na pasta de plugins, que está nos arquivos do seu servidor.

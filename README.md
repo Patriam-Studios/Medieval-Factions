@@ -19,6 +19,8 @@
 > nulls block startup before the database is opened. MF4 files remain on their separate historical
 > import path.
 >
+> This fork targets Minecraft 26.2 and requires Java 25 or newer.
+>
 > Everything below this box is upstream's README.
 
 

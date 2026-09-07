@@ -1,11 +1,11 @@
 # Medieval Factions — Copilot Instructions
 
 ## Stack
-Kotlin · Bukkit/Paper API · Gradle (Shadow JAR) · Java 17 toolchain
+Kotlin · Bukkit/Paper API · Gradle (Shadow JAR) · Java 25 bytecode target
 
 ## Build
 `./gradlew shadowJar`. CI builds Ponder from source (`Dans-Plugins/Ponder` tag `2.0.0`)
-via `publishToMavenLocal` before the main build.
+with JDK 17 via `publishToMavenLocal`, then builds Medieval Factions with JDK 25.
 
 ## DPC API integration (`dpc/MfDpcApiService`)
 - Wire contract source of truth: the dpc-api OpenAPI spec, exposed by the
@@ -64,7 +64,7 @@ making any changes.
 
 - Language: Kotlin (JVM)
 - Build tool: Gradle (Groovy DSL) with the Shadow plugin for fat JAR builds
-- Target platform: Spigot / Paper (Minecraft plugin, API version 1.17+)
+- Target platform: Spigot / Paper 26.2 (Minecraft plugin, Java 25 required)
 - Test framework: JUnit 5
 - Database ORM: JOOQ with Flyway migrations; supports H2, MySQL, and PostgreSQL
 - Connection pooling: HikariCP

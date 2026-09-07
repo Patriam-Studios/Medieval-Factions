@@ -80,9 +80,9 @@ The development of the fifth major version of MF was led by [alyphen](https://gi
 4. Configure the plugin in `plugins/MedievalFactions/config.yml` (optional)
 
 ### Requirements
-- **Minecraft Version:** 1.16.5+ (check specific version compatibility)
+- **Minecraft Version:** 26.2
 - **Server Software:** Spigot, Paper, or any Spigot-based server
-- **Java Version:** Java 8 or higher
+- **Java Version:** Java 25 or higher
 
 ### Optional Integrations
 

@@ -1,9 +1,9 @@
 plugins {
-    id 'org.jetbrains.kotlin.jvm' version '1.7.0'
+    id 'org.jetbrains.kotlin.jvm' version '2.4.10'
     id 'maven-publish'
-    id 'com.github.johnrengelman.shadow' version '7.1.2'
-    id 'nu.studer.jooq' version '7.1.1'
-    id 'org.jmailen.kotlinter' version '3.12.0'
+    id 'com.gradleup.shadow' version '9.6.1'
+    id 'nu.studer.jooq' version '8.2.3'
+    id 'org.jmailen.kotlinter' version '5.7.0'
 }
 
 group = "com.dansplugins"
@@ -22,13 +22,13 @@ if (propertiesFile.exists()) {
 repositories {
     mavenLocal()
     mavenCentral()
-    maven { url 'https://hub.spigotmc.org/nexus/content/repositories/public/' }
-    maven { url 'https://oss.sonatype.org/content/groups/public/' }
-    maven { url 'https://repo.mikeprimm.com/' }
-    maven { url 'https://repo.helpch.at/releases/' }
-    maven { url 'https://jitpack.io' }
-    maven { url 'https://repo.maven.apache.org/maven2/' }
-    maven { url 'https://repo.rpkit.com/repository/maven-public/' }
+    maven { url = 'https://hub.spigotmc.org/nexus/content/repositories/public/' }
+    maven { url = 'https://oss.sonatype.org/content/groups/public/' }
+    maven { url = 'https://repo.mikeprimm.com/' }
+    maven { url = 'https://repo.helpch.at/releases/' }
+    maven { url = 'https://jitpack.io' }
+    maven { url = 'https://repo.maven.apache.org/maven2/' }
+    maven { url = 'https://repo.rpkit.com/repository/maven-public/' }
 }
 
 configurations {
@@ -42,7 +42,7 @@ dependencies {
     implementation 'org.bstats:bstats-bukkit:3.0.0'
     implementation platform("dev.forkhandles:forkhandles-bom:2.2.0.0")
     implementation 'dev.forkhandles:result4k'
-    implementation 'org.jooq:jooq:3.17.4'
+    implementation 'org.jooq:jooq:3.19.1'
     implementation 'org.flywaydb:flyway-core:9.4.0'
     implementation 'org.flywaydb:flyway-mysql:9.4.0'
     implementation 'org.mariadb.jdbc:mariadb-java-client:3.0.6'
@@ -55,28 +55,33 @@ dependencies {
     implementation 'com.rpkit:rpk-player-lib-bukkit:2.3.2:all'
     implementation 'com.rpkit:rpk-notification-lib-bukkit:2.3.2:all'
     implementation 'com.rpkit:rpk-lock-lib-bukkit:2.3.2:all'
-    jooqGenerator 'org.jooq:jooq-meta-extensions:3.17.4'
+    jooqGenerator 'org.jooq:jooq-meta-extensions:3.19.1'
 
     // Use the Kotlin JUnit 5 integration.
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
-    testImplementation("org.mockito:mockito-core:4.0.0")
-    testImplementation("org.mockito:mockito-inline:4.0.0")
+    testImplementation("org.mockito:mockito-core:5.23.0")
     testImplementation("au.com.dius.pact.consumer:junit5:4.6.7")
 
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 kotlin {
-    jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of(17))
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_25
     }
 }
 
-// Apply a specific Java toolchain to ease working on different environments.
+// Minecraft 26.2 requires Java 25, so this fork deliberately targets Java 25 bytecode.
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
+        languageVersion = JavaLanguageVersion.of(25)
     }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release.set(25)
 }
 
 tasks.named('check') {
@@ -153,6 +158,9 @@ shadowJar {
     archiveBaseName.set('Medieval-Factions')
     archiveClassifier.set('')
     mergeServiceFiles()
+    filesMatching(['META-INF/services/**', 'META-INF/*.kotlin_module']) {
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    }
     dependencies {
         include(dependency('org.jetbrains.kotlin:kotlin-stdlib-jdk8'))
         include(dependency('org.jetbrains.kotlin:kotlin-stdlib'))
@@ -220,18 +228,14 @@ tasks.register('apiJar', Jar) {
     }
 }
 
-tasks.named('assemble') { dependsOn 'apiJar' }
-
-artifacts {
-    archives shadowJar
-}
+tasks.named('assemble') { dependsOn 'apiJar', 'shadowJar' }
 
 publishing {
     repositories {
         maven {
             credentials {
-                username repoUsername
-                password repoPassword
+                username = repoUsername
+                password = repoPassword
             }
             def releasesRepoUrl = "https://repo.dansplugins.com/repository/maven-releases/"
             def snapshotsRepoUrl = "https://repo.dansplugins.com/repository/maven-snapshots/"
@@ -272,7 +276,7 @@ publishing {
                 def dep = deps.appendNode('dependency')
                 dep.appendNode('groupId', 'org.jetbrains.kotlin')
                 dep.appendNode('artifactId', 'kotlin-stdlib')
-                dep.appendNode('version', '1.7.0')
+                dep.appendNode('version', '2.4.10')
                 dep.appendNode('scope', 'compile')
             }
         }

@@ -9,6 +9,7 @@ Thank you for being interested in contributing to the project! It wouldn't be wh
 ## Requirements
 - A GitHub account
 - Git installed on your local machine
+- JDK 25 installed and selected for Gradle
 - A text editor or IDE
 - A basic understanding of Java
 

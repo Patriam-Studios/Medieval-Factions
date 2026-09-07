@@ -2,6 +2,8 @@
 
 This guide explains how to reference the Medieval Factions plugin JAR in your Maven or Gradle project.
 
+The Patriam fork targets Java 25 bytecode. Consumer builds and server runtimes must use JDK 25 or newer.
+
 ## Automatic Publishing
 
 Upon each release (including draft releases), a GitHub Action automatically builds the plugin JAR and publishes it to GitHub Packages. This allows developers to extend the plugin by referencing it in their build files.
