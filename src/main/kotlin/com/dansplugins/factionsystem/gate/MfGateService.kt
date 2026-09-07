@@ -257,7 +257,8 @@ class MfGateService(
                 plugin.logger.info("Deleting gate with ID: ${gate.id} as it uses a restricted block material: ${gate.material}")
 
                 gateService.delete(gate.id).onFailure {
-                    plugin.logger.log(SEVERE, "Failed to delete gate with ID: ${gate.id}.") as Nothing
+                    plugin.logger.log(SEVERE, "Failed to delete gate with ID: ${gate.id}.")
+                    return@forEach
                 }
             }
         }

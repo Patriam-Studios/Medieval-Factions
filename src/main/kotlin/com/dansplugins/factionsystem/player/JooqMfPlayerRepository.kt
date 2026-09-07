@@ -39,7 +39,7 @@ class JooqMfPlayerRepository(private val plugin: MedievalFactions, private val d
             .set(MF_PLAYER.CHAT_CHANNEL, player.chatChannel?.name)
             .set(MF_PLAYER.VERSION, player.version + 1)
             .where(MF_PLAYER.ID.eq(player.id.value))
-            .and(MF_PLAYER.VERSION.eq(MF_PLAYER.VERSION))
+            .and(MF_PLAYER.VERSION.eq(player.version))
             .execute()
         if (rowCount == 0) throw OptimisticLockingFailureException("Invalid version: ${player.version}")
         return getPlayer(player.id).let(::requireNotNull)

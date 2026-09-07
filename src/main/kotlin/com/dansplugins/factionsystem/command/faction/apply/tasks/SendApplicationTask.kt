@@ -35,7 +35,7 @@ class SendApplicationTask(
             return
         }
 
-        saveFactionApplication(factionService, target, mfPlayer, sender)
+        if (!saveFactionApplication(factionService, target, mfPlayer, sender)) return
         target.sendMessage("${ChatColor.GREEN}${plugin.language["CommandFactionApplyNewApplicationTitle"]}", "${ChatColor.AQUA}${plugin.language["CommandFactionApplyNewApplicationMessage", mfPlayer.name.toString()]}")
         sender.sendMessage("${ChatColor.GREEN}${plugin.language["CommandFactionApplySuccess"]}")
     }
@@ -43,7 +43,8 @@ class SendApplicationTask(
     private fun getOrSavePlayer(playerService: MfPlayerService, sender: Player): MfPlayer? {
         return playerService.getPlayer(sender) ?: playerService.save(MfPlayer(plugin, sender)).onFailure {
             sender.sendMessage("${ChatColor.RED}${plugin.language["CommandFactionApplyFailedToSavePlayer"]}")
-            plugin.logger.log(SEVERE, "Failed to save player: ${it.reason.message}", it.reason.cause) as Nothing
+            plugin.logger.log(SEVERE, "Failed to save player: ${it.reason.message}", it.reason.cause)
+            return null
         }
     }
 
@@ -55,10 +56,12 @@ class SendApplicationTask(
         return target
     }
 
-    private fun saveFactionApplication(factionService: MfFactionService, target: MfFaction, mfPlayer: MfPlayer, sender: Player) {
+    private fun saveFactionApplication(factionService: MfFactionService, target: MfFaction, mfPlayer: MfPlayer, sender: Player): Boolean {
         factionService.save(target.copy(applications = target.applications + MfFactionApplication(target.id, mfPlayer.id))).onFailure {
             sender.sendMessage("${ChatColor.RED}${plugin.language["CommandFactionApplyFailedToSaveFaction"]}")
-            plugin.logger.log(SEVERE, "Failed to save faction: ${it.reason.message}", it.reason.cause) as Nothing
+            plugin.logger.log(SEVERE, "Failed to save faction: ${it.reason.message}", it.reason.cause)
+            return false
         }
+        return true
     }
 }
