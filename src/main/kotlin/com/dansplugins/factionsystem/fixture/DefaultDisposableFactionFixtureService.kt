@@ -124,8 +124,10 @@ class DefaultDisposableFactionFixtureService(
     }
 
     private fun referencedActors(faction: MfFaction): Set<String> =
-        (faction.members.map { it.playerId.value } + faction.invites.map { it.playerId.value } +
-            faction.applications.map { it.applicantId.value } + listOfNotNull(faction.primaryOwnerId?.value, faction.heirId?.value)).toSet()
+        (
+            faction.members.map { it.playerId.value } + faction.invites.map { it.playerId.value } +
+            faction.applications.map { it.applicantId.value } + listOfNotNull(faction.primaryOwnerId?.value, faction.heirId?.value)
+        ).toSet()
 
     private fun receipt(tag: String, actorIds: Set<UUID>): DisposableFixtureReceipt {
         receipts.validate(tag, actorIds)

@@ -4,12 +4,12 @@ import com.dansplugins.factionsystem.MedievalFactions
 import com.dansplugins.factionsystem.failure.OptimisticLockingFailureException
 import com.dansplugins.factionsystem.failure.ServiceFailure
 import com.dansplugins.factionsystem.failure.ServiceFailureType
+import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 import com.dansplugins.factionsystem.player.MfPlayerId
 import dev.forkhandles.result4k.mapFailure
 import dev.forkhandles.result4k.resultFrom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
-import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 
 class MfDuelService(
     private val plugin: MedievalFactions,

@@ -6,6 +6,7 @@ import com.dansplugins.factionsystem.failure.ServiceFailure
 import com.dansplugins.factionsystem.failure.ServiceFailureType
 import com.dansplugins.factionsystem.failure.ServiceFailureType.CONFLICT
 import com.dansplugins.factionsystem.failure.ServiceFailureType.GENERAL
+import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 import dev.forkhandles.result4k.Result4k
 import dev.forkhandles.result4k.mapFailure
 import dev.forkhandles.result4k.onFailure
@@ -14,7 +15,6 @@ import org.bukkit.OfflinePlayer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Level.SEVERE
 import kotlin.collections.set
-import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 
 class MfPlayerService(private val plugin: MedievalFactions, private val playerRepository: MfPlayerRepository) {
 

@@ -24,6 +24,8 @@ import com.dansplugins.factionsystem.failure.ServiceFailure
 import com.dansplugins.factionsystem.failure.ServiceFailureType
 import com.dansplugins.factionsystem.failure.ServiceFailureType.CONFLICT
 import com.dansplugins.factionsystem.failure.ServiceFailureType.GENERAL
+import com.dansplugins.factionsystem.fixture.guardFixtureFaction
+import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 import com.dansplugins.factionsystem.player.MfPlayer
 import com.dansplugins.factionsystem.player.MfPlayerId
 import dev.forkhandles.result4k.Result4k
@@ -37,8 +39,6 @@ import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.withLock
-import com.dansplugins.factionsystem.fixture.guardFixtureFaction
-import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 import kotlin.concurrent.write
 
 /**

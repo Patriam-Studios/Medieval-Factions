@@ -6,11 +6,11 @@ import com.dansplugins.factionsystem.chat.MfFactionChatChannel.FACTION
 import com.dansplugins.factionsystem.chat.MfFactionChatChannel.VASSALS
 import com.dansplugins.factionsystem.faction.MfFaction
 import com.dansplugins.factionsystem.faction.MfFactionId
+import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 import com.dansplugins.factionsystem.player.MfPlayer
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.ALLY
 import net.md_5.bungee.api.ChatColor
 import java.time.Instant
-import com.dansplugins.factionsystem.fixture.guardFixturePlayers
 
 class MfChatService(private val plugin: MedievalFactions, private val repo: MfChatChannelMessageRepository) {
 
