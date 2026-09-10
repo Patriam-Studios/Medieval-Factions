@@ -392,6 +392,7 @@ class MedievalFactions : JavaPlugin() {
             }
         }
 
+        val entityInteractionProtection = com.dansplugins.factionsystem.listener.EntityInteractionProtection(this)
         listOf(
             com.dansplugins.factionsystem.api.impl.ApiFactionLifecycleListener(this),
             com.dansplugins.factionsystem.api.impl.ApiRelationshipListener(this),
@@ -413,8 +414,9 @@ class MedievalFactions : JavaPlugin() {
             LingeringPotionSplashListener(this),
             PlayerBucketListener(this),
             PlayerDeathListener(this),
-            PlayerInteractAtEntityListener(this),
-            PlayerInteractEntityListener(this),
+            entityInteractionProtection,
+            PlayerInteractAtEntityListener(this, entityInteractionProtection),
+            PlayerInteractEntityListener(this, entityInteractionProtection),
             PlayerInteractListener(this),
             PlayerJoinListener(this),
             PlayerMoveListener(this),
