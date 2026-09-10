@@ -4,6 +4,7 @@ import com.dansplugins.factionsystem.MedievalFactions
 import com.dansplugins.factionsystem.api.ClaimAction
 import com.dansplugins.factionsystem.area.MfBlockPosition
 import com.dansplugins.factionsystem.area.MfCuboidArea
+import com.dansplugins.factionsystem.claim.MfClaimedChunk
 import com.dansplugins.factionsystem.gate.MfGate
 import com.dansplugins.factionsystem.gate.MfGateCreationContext
 import com.dansplugins.factionsystem.interaction.MfInteractionStatus.ADDING_ACCESSOR
@@ -36,7 +37,9 @@ import org.bukkit.block.data.type.TrapDoor
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
+import org.bukkit.event.block.Action.LEFT_CLICK_BLOCK
 import org.bukkit.event.block.Action.PHYSICAL
+import org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.inventory.EquipmentSlot.HAND
 import org.bukkit.inventory.InventoryHolder
@@ -220,37 +223,45 @@ class PlayerInteractListener(private val plugin: MedievalFactions) : Listener {
             } else {
                 // Check if player is at war and trying to place a ladder
                 // Only allow if they're right-clicking with a ladder on a solid, non-interactable block
-                val isPlacingLadder = event.action == org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK &&
+                val isPlacingLadder = event.action == RIGHT_CLICK_BLOCK &&
                     event.hasItem() && event.item?.type == Material.LADDER && clickedBlock.type.isSolid && !clickedBlock.type.isInteractable
-                if (claimService.isWartimeLadderPlacementAllowed(
+                if (isPlacingLadder && claimService.isWartimeLadderPlacementAllowed(
                         mfPlayer.id,
                         claim,
-                        isPlacingLadder
+                        true
                     )
                 ) {
                     // Allow ladder placement in enemy territory during wartime
                     return
                 }
-                if (claimService.isWartimeInteractableBlock(mfPlayer.id, claim, clickedBlock.type)) {
-                    // Block is in the wartime interactable list; allow the interaction
+                if (isWartimeActionAllowed(event, clickedBlock, mfPlayer, claim)) {
                     return
-                }
-                if (event.action == org.bukkit.event.block.Action.LEFT_CLICK_BLOCK &&
-                    claimService.isWartimeBreakableBlock(mfPlayer.id, claim, clickedBlock.type)
-                ) {
-                    // Block is in the wartime breakable list; allow the left-click so BlockBreakEvent can fire
-                    return
-                }
-                if (event.action == org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK && event.hasItem() && !clickedBlock.type.isInteractable) {
-                    val itemType = event.item?.type
-                    if (itemType != null && claimService.isWartimePlaceableBlock(mfPlayer.id, claim, itemType)) {
-                        // Item in hand is in the wartime placeable list; allow the right-click so BlockPlaceEvent can fire
-                        return
-                    }
                 }
                 event.isCancelled = true
                 if (notify) event.player.sendMessage("$RED${plugin.language["CannotInteractWithBlockInFactionTerritory", claimFaction.name]}")
             }
+        }
+    }
+
+    /**
+     * Resolve the attempted action before consulting its wartime list. A right-click interaction
+     * grant must not admit left-click damage or passive physical events; an item placement grant
+     * must not open the container it was clicked against. Returning true preserves both existing
+     * Bukkit results, including another plugin's DENY; break/place events retain their own gates.
+     */
+    private fun isWartimeActionAllowed(event: PlayerInteractEvent, block: Block, player: MfPlayer, claim: MfClaimedChunk): Boolean {
+        val claims = plugin.services.claimService
+        return when (event.action) {
+            LEFT_CLICK_BLOCK -> claims.isWartimeBreakableBlock(player.id, claim, block.type)
+            RIGHT_CLICK_BLOCK -> if (block.type.isInteractable) {
+                claims.isWartimeInteractableBlock(player.id, claim, block.type)
+            } else if (event.hasItem()) {
+                val item = event.item
+                item != null && claims.isWartimePlaceableBlock(player.id, claim, item.type)
+            } else {
+                false
+            }
+            else -> false
         }
     }
 

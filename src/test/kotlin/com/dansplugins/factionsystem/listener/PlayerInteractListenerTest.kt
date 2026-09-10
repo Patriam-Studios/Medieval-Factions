@@ -452,6 +452,8 @@ class PlayerInteractListenerTest {
         val playerId = MfPlayerId(fixture.player.uniqueId.toString())
         val claim = claimService.getClaim(block.chunk)!!
 
+        // This control represents an actual interactive block, not the helper's placement surface.
+        `when`(block.type.isInteractable).thenReturn(true)
         `when`(claimService.isWartimeInteractableBlock(playerId, claim, block.type)).thenReturn(true)
 
         // Act
