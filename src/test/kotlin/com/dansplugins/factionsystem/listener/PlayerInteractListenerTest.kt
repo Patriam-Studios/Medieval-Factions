@@ -435,7 +435,7 @@ class PlayerInteractListenerTest {
 
         // Assert - physical action with ladder should not bypass protection
         verifyEventCancelled()
-        verifyPlayerNotified()
+        verify(fixture.player, never()).sendMessage(any(String::class.java))
     }
 
     @Test

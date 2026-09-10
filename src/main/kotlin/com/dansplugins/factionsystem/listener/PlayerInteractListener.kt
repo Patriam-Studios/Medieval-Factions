@@ -40,10 +40,13 @@ import org.bukkit.event.block.Action.PHYSICAL
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.inventory.EquipmentSlot.HAND
 import org.bukkit.inventory.InventoryHolder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Level.SEVERE
 import org.bukkit.block.data.type.Gate as FenceGateData
 
 class PlayerInteractListener(private val plugin: MedievalFactions) : Listener {
+
+    private val pendingPlayers = ConcurrentHashMap.newKeySet<MfPlayerId>()
 
     @EventHandler
     fun onPlayerInteract(event: PlayerInteractEvent) {
@@ -109,19 +112,13 @@ class PlayerInteractListener(private val plugin: MedievalFactions) : Listener {
         val playerService = plugin.services.playerService
         val claimService = plugin.services.claimService
         val mfPlayer = playerService.getPlayer(event.player)
+        // Physical events repeat while a player stands on a protected block. Recheck enforcement
+        // every time, but do not schedule owner-name lookups or flood chat for those passive events.
+        val notify = event.action != PHYSICAL
 
         if (mfPlayer == null) {
             event.isCancelled = true
-            plugin.server.scheduler.runTaskAsynchronously(
-                plugin,
-                Runnable {
-                    playerService.save(MfPlayer(plugin, event.player)).onFailure {
-                        event.player.sendMessage("$RED${plugin.language["BlockInteractFailedToSavePlayer"]}")
-                        plugin.logger.log(SEVERE, "Failed to save player: ${it.reason.message}", it.reason.cause)
-                        return@Runnable
-                    }
-                }
-            )
+            registerMissingPlayer(event.player)
             return
         }
 
@@ -149,21 +146,25 @@ class PlayerInteractListener(private val plugin: MedievalFactions) : Listener {
             if (event.player.uniqueId.toString() !in (lockedBlock.accessors + lockedBlock.playerId).map(MfPlayerId::value)) {
                 // Check if player has bypass permission from mf.bypass or faction permission
                 if ((mfPlayer.isBypassEnabled && event.player.hasPermission("mf.bypass")) || hasLockBypassPermission(mfPlayer)) {
-                    plugin.server.scheduler.runTaskAsynchronously(
-                        plugin,
-                        Runnable {
-                            val owner = playerService.getPlayer(lockedBlock.playerId)
-                            event.player.sendMessage("$RED${plugin.language["LockProtectionBypassed", owner?.toBukkit()?.name ?: plugin.language["UnknownPlayer"]]}")
-                        }
-                    )
+                    if (notify) {
+                        plugin.server.scheduler.runTaskAsynchronously(
+                            plugin,
+                            Runnable {
+                                val owner = playerService.getPlayer(lockedBlock.playerId)
+                                event.player.sendMessage("$RED${plugin.language["LockProtectionBypassed", owner?.toBukkit()?.name ?: plugin.language["UnknownPlayer"]]}")
+                            }
+                        )
+                    }
                 } else {
-                    plugin.server.scheduler.runTaskAsynchronously(
-                        plugin,
-                        Runnable {
-                            val owner = playerService.getPlayer(lockedBlock.playerId)
-                            event.player.sendMessage("$RED${plugin.language["BlockLocked", owner?.toBukkit()?.name ?: plugin.language["UnknownPlayer"]]}")
-                        }
-                    )
+                    if (notify) {
+                        plugin.server.scheduler.runTaskAsynchronously(
+                            plugin,
+                            Runnable {
+                                val owner = playerService.getPlayer(lockedBlock.playerId)
+                                event.player.sendMessage("$RED${plugin.language["BlockLocked", owner?.toBukkit()?.name ?: plugin.language["UnknownPlayer"]]}")
+                            }
+                        )
+                    }
                     event.isCancelled = true
                 }
                 return
@@ -185,7 +186,7 @@ class PlayerInteractListener(private val plugin: MedievalFactions) : Listener {
         if (claim == null) {
             if (plugin.config.getBoolean("wilderness.interaction.prevent", false)) {
                 event.isCancelled = true
-                if (plugin.config.getBoolean("wilderness.interaction.alert", true)) {
+                if (notify && plugin.config.getBoolean("wilderness.interaction.alert", true)) {
                     event.player.sendMessage("$RED${plugin.language["CannotInteractBlockInWilderness"]}")
                 }
             }
@@ -215,7 +216,7 @@ class PlayerInteractListener(private val plugin: MedievalFactions) : Listener {
                 )
         ) {
             if (mfPlayer.isBypassEnabled && event.player.hasPermission("mf.bypass")) {
-                event.player.sendMessage("$RED${plugin.language["FactionTerritoryProtectionBypassed"]}")
+                if (notify) event.player.sendMessage("$RED${plugin.language["FactionTerritoryProtectionBypassed"]}")
             } else {
                 // Check if player is at war and trying to place a ladder
                 // Only allow if they're right-clicking with a ladder on a solid, non-interactable block
@@ -248,8 +249,42 @@ class PlayerInteractListener(private val plugin: MedievalFactions) : Listener {
                     }
                 }
                 event.isCancelled = true
-                event.player.sendMessage("$RED${plugin.language["CannotInteractWithBlockInFactionTerritory", claimFaction.name]}")
+                if (notify) event.player.sendMessage("$RED${plugin.language["CannotInteractWithBlockInFactionTerritory", claimFaction.name]}")
             }
+        }
+    }
+
+    private fun registerMissingPlayer(player: Player) {
+        val id = MfPlayerId.fromBukkitPlayer(player)
+        if (!pendingPlayers.add(id)) return
+        try {
+            // Capture Bukkit identity and configuration before the asynchronous persistence call.
+            val snapshot = MfPlayer(plugin, player)
+            val players = plugin.services.playerService
+            plugin.server.scheduler.runTaskAsynchronously(
+                plugin,
+                Runnable {
+                    try {
+                        players.save(snapshot).onFailure {
+                            plugin.logger.log(SEVERE, "Failed to save player: ${it.reason.message}", it.reason.cause)
+                            plugin.server.scheduler.runTask(
+                                plugin,
+                                Runnable {
+                                    if (player.isOnline) player.sendMessage("$RED${plugin.language["BlockInteractFailedToSavePlayer"]}")
+                                }
+                            )
+                            return@Runnable
+                        }
+                    } catch (failure: RuntimeException) {
+                        plugin.logger.log(SEVERE, "Failed to register block interaction player", failure)
+                    } finally {
+                        pendingPlayers.remove(id)
+                    }
+                }
+            )
+        } catch (failure: RuntimeException) {
+            pendingPlayers.remove(id)
+            plugin.logger.log(SEVERE, "Could not schedule block interaction player registration", failure)
         }
     }
 
