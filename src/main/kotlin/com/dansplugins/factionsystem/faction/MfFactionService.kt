@@ -3,6 +3,8 @@ package com.dansplugins.factionsystem.faction
 import com.dansplugins.factionsystem.MedievalFactions
 import com.dansplugins.factionsystem.api.FactionId
 import com.dansplugins.factionsystem.api.WarEndNotice
+import com.dansplugins.factionsystem.api.event.FactionCreatedEvent
+import com.dansplugins.factionsystem.api.event.FactionMemberJoinedEvent
 import com.dansplugins.factionsystem.api.event.FactionMemberLeftEvent
 import com.dansplugins.factionsystem.api.event.FactionPrimaryOwnerChangedEvent
 import com.dansplugins.factionsystem.api.impl.FactionViewAdapter
@@ -487,6 +489,15 @@ class MfFactionService(private val plugin: MedievalFactions, private val reposit
             }
             publishMemberDepartures(result.id, mutation.removedMembers)
             val previous = mutation.previous
+            if (previous == null) {
+                fireOnMainThread(FactionCreatedEvent(FactionId(result.id.value)))
+            } else {
+                val previousMembers = previous.members.mapNotNull { it.playerId.toUuidOrNull() }.toSet()
+                val arrivals = result.members.mapNotNull { it.playerId.toUuidOrNull() }.toSet() - previousMembers
+                for (playerId in arrivals) {
+                    fireOnMainThread(FactionMemberJoinedEvent(FactionId(result.id.value), playerId))
+                }
+            }
             if (previous != null && previous.primaryOwnerId != result.primaryOwnerId) {
                 fireOnMainThread(
                     FactionPrimaryOwnerChangedEvent(

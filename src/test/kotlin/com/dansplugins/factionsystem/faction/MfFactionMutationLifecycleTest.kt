@@ -3,9 +3,14 @@ package com.dansplugins.factionsystem.faction
 import com.dansplugins.factionsystem.MedievalFactions
 import com.dansplugins.factionsystem.anyArg
 import com.dansplugins.factionsystem.api.FactionId
+import com.dansplugins.factionsystem.api.event.FactionCreatedEvent
+import com.dansplugins.factionsystem.api.event.FactionMemberJoinedEvent
+import com.dansplugins.factionsystem.api.impl.ApiFactionLifecycleListener
 import com.dansplugins.factionsystem.api.impl.DefaultMedievalFactionsApi
+import com.dansplugins.factionsystem.event.faction.FactionCreateEvent
 import com.dansplugins.factionsystem.event.faction.FactionDeletedEvent
 import com.dansplugins.factionsystem.event.faction.FactionDisbandEvent
+import com.dansplugins.factionsystem.event.faction.FactionJoinEvent
 import com.dansplugins.factionsystem.faction.flag.MfFlags
 import com.dansplugins.factionsystem.faction.permission.MfFactionPermissions
 import com.dansplugins.factionsystem.faction.role.MfFactionRoles
@@ -33,6 +38,7 @@ import org.bukkit.scheduler.BukkitTask
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -52,6 +58,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import java.util.logging.Logger
 import kotlin.concurrent.thread
+import com.dansplugins.factionsystem.api.event.FactionCreateEvent as ApiFactionCreateEvent
 
 class MfFactionMutationLifecycleTest {
 
@@ -66,6 +73,7 @@ class MfFactionMutationLifecycleTest {
     private lateinit var mapService: MapService
     private val events = CopyOnWriteArrayList<Event>()
     private val publicationOrder = CopyOnWriteArrayList<String>()
+    private var eventProbe: (Event) -> Unit = {}
 
     @Volatile private var cancelDisband = false
 
@@ -98,8 +106,10 @@ class MfFactionMutationLifecycleTest {
         doAnswer { invocation ->
             val event = invocation.getArgument<Event>(0)
             events += event
+            if (event is FactionCreateEvent) ApiFactionLifecycleListener(plugin).onFactionCreate(event)
             if (event is FactionDeletedEvent) publicationOrder += "deleted:${event.factionId.value}"
             if (cancelDisband && event is FactionDisbandEvent) event.isCancelled = true
+            eventProbe(event)
             null
         }.`when`(manager).callEvent(any(Event::class.java))
         val scheduler = mock(BukkitScheduler::class.java)
@@ -247,6 +257,7 @@ class MfFactionMutationLifecycleTest {
         assertEquals(setOf(first, second), current(source).members.map { it.playerId }.toSet())
         assertEquals(listOf(first), current(destination).members.map { it.playerId })
         assertEquals(0, repository.atomicMutationCalls)
+        assertTrue(events.filterIsInstance<FactionMemberJoinedEvent>().isEmpty())
 
         cancelDisband = false
         repository.failAtomicMutation = true
@@ -258,6 +269,7 @@ class MfFactionMutationLifecycleTest {
         assertTrue(failed.isFailure)
         assertEquals(setOf(first, second), current(source).members.map { it.playerId }.toSet())
         assertEquals(listOf(first), current(destination).members.map { it.playerId })
+        assertTrue(events.filterIsInstance<FactionMemberJoinedEvent>().isEmpty())
 
         repository.failAtomicMutation = false
         val cacheMidpoint = CountDownLatch(1)
@@ -306,6 +318,11 @@ class MfFactionMutationLifecycleTest {
         assertEquals(1, finalMembers.count { it == second })
         assertEquals(2, repository.atomicMutationCalls, "failed attempt plus successful retry")
         assertEquals(1, events.filterIsInstance<FactionDeletedEvent>().count { it.factionId == source.id })
+        assertEquals(
+            listOf(FactionId(destination.id.value) to UUID.fromString(second.value)),
+            events.filterIsInstance<FactionMemberJoinedEvent>().map { it.faction to it.playerId }
+        )
+        assertTrue(events.filterIsInstance<FactionCreatedEvent>().isEmpty())
         verify(claims, times(1)).evictAllClaims(source.id)
         verify(gates, times(1)).evictAllGates(source.id)
         verify(relationships, times(1)).evictForDeletedFaction(source.id)
@@ -330,7 +347,304 @@ class MfFactionMutationLifecycleTest {
         assertEquals(0, repository.atomicMutationCalls)
     }
 
-    private fun createFaction(name: String, members: List<MfPlayerId>): MfFaction {
+    @Test
+    fun creationNotifiesOnceOnTheMainTurnAfterPersistenceAndCachePublication() {
+        val tasks = queueMainTasks()
+        val proposed = unsavedFaction("Created", listOf(player(), player()))
+        repository.beforeWrite = {
+            assertNull(service.getFaction(proposed.id))
+            assertTrue(tasks.isEmpty())
+            assertTrue(committedMembershipEvents().isEmpty())
+        }
+        eventProbe = { event ->
+            if (event is FactionCreatedEvent) {
+                assertEquals(proposed.id.value, event.faction.value)
+                assertSame(repository.rows[proposed.id], service.getFaction(proposed.id))
+                assertFalse(event.isAsynchronous)
+            }
+        }
+
+        val result = service.save(proposed).onFailure { throw it.reason.cause }
+
+        assertTrue(committedMembershipEvents().isEmpty())
+        assertSame(result, service.getFaction(proposed.id))
+        drainMainTasks(tasks)
+        assertEquals(1, events.filterIsInstance<FactionCreatedEvent>().size)
+        assertTrue(events.filterIsInstance<FactionMemberJoinedEvent>().isEmpty())
+    }
+
+    @Test
+    fun cancelledStableCreateGateDoesNotScheduleACommittedCreation() {
+        val tasks = queueMainTasks()
+        val proposed = unsavedFaction("Cancelled", listOf(player()))
+        var observedGate: ApiFactionCreateEvent? = null
+        var absentBeforeGate = false
+        eventProbe = { event ->
+            if (event is ApiFactionCreateEvent) {
+                observedGate = event
+                absentBeforeGate = repository.rows[proposed.id] == null
+                event.isCancelled = true
+            }
+        }
+
+        assertTrue(service.save(proposed) is Failure)
+
+        val gate = requireNotNull(observedGate)
+        assertTrue(gate.isAsynchronous)
+        assertTrue(gate.isCancelled)
+        assertTrue(absentBeforeGate)
+        assertEquals(1, events.filterIsInstance<ApiFactionCreateEvent>().size)
+        assertNull(service.getFaction(proposed.id))
+        assertNull(repository.rows[proposed.id])
+        assertTrue(tasks.isEmpty())
+        assertTrue(committedMembershipEvents().isEmpty())
+    }
+
+    @Test
+    fun failedCreationDoesNotScheduleACommittedCreation() {
+        val tasks = queueMainTasks()
+        val proposed = unsavedFaction("Failed", listOf(player()))
+        repository.failSave = true
+
+        assertTrue(service.save(proposed) is Failure)
+
+        assertNull(service.getFaction(proposed.id))
+        assertNull(repository.rows[proposed.id])
+        assertTrue(tasks.isEmpty())
+        assertTrue(committedMembershipEvents().isEmpty())
+    }
+
+    @Test
+    fun memberJoinNotifiesOnceOnTheMainTurnAfterPersistenceAndCachePublication() {
+        val faction = createFaction("Joined", listOf(player()))
+        events.clear()
+        val tasks = queueMainTasks()
+        val arrival = player()
+        val proposed = withArrivals(faction, arrival)
+        repository.beforeWrite = {
+            assertFalse(current(faction).isMember(arrival))
+            assertTrue(tasks.isEmpty())
+        }
+        eventProbe = { event ->
+            if (event is FactionMemberJoinedEvent) {
+                assertTrue(current(faction).isMember(arrival))
+                assertSame(repository.rows[faction.id], service.getFaction(faction.id))
+                assertFalse(event.isAsynchronous)
+            }
+        }
+
+        service.save(proposed).onFailure { throw it.reason.cause }
+
+        assertTrue(committedMembershipEvents().isEmpty())
+        drainMainTasks(tasks)
+        assertEquals(
+            listOf(FactionId(faction.id.value) to UUID.fromString(arrival.value)),
+            events.filterIsInstance<FactionMemberJoinedEvent>().map { it.faction to it.playerId }
+        )
+        assertTrue(events.filterIsInstance<FactionCreatedEvent>().isEmpty())
+    }
+
+    @Test
+    fun distinctMemberDeltaIgnoresDuplicateRowsAndAlreadyPresentMembers() {
+        val founder = player()
+        val faction = createFaction("Distinct", listOf(founder))
+        val arrival = player()
+        events.clear()
+
+        service.save(withArrivals(faction, founder, listOf(arrival, arrival))).onFailure { throw it.reason.cause }
+
+        assertEquals(listOf(UUID.fromString(arrival.value)), events.filterIsInstance<FactionMemberJoinedEvent>().map { it.playerId })
+        assertTrue(events.filterIsInstance<FactionCreatedEvent>().isEmpty())
+    }
+
+    @Test
+    fun memberDeltaUsesCanonicalUuidsAndSkipsMalformedImportedIds() {
+        val founder = player()
+        val faction = createFaction("CanonicalIds", listOf(founder))
+        val arrival = player()
+        events.clear()
+        val proposed = withArrivals(
+            faction,
+            MfPlayerId(founder.value.uppercase()),
+            listOf(arrival, MfPlayerId(arrival.value.uppercase()), MfPlayerId("malformed-import-id"))
+        )
+
+        service.save(proposed).onFailure { throw it.reason.cause }
+
+        assertEquals(listOf(UUID.fromString(arrival.value)), events.filterIsInstance<FactionMemberJoinedEvent>().map { it.playerId })
+    }
+
+    @Test
+    fun noOpRenameAndRoleChangesDoNotRepeatCreationOrJoin() {
+        val faction = createFaction("NoOp", listOf(player(), player()))
+        events.clear()
+        service.save(faction).onFailure { throw it.reason.cause }
+        service.save(current(faction).copy(name = "Renamed")).onFailure { throw it.reason.cause }
+        val changedRole = current(faction).members.last().copy(role = requireNotNull(faction.roles.leaderRole))
+        service.save(current(faction).copy(members = listOf(faction.members.first(), changedRole)))
+            .onFailure { throw it.reason.cause }
+
+        assertTrue(committedMembershipEvents().isEmpty())
+    }
+
+    @Test
+    fun cancelledJoinAndSuccessfulRetryNotifyOnlyTheCommittedArrival() {
+        val faction = createFaction("CancelledJoin", listOf(player()))
+        val arrival = player()
+        events.clear()
+        val tasks = queueMainTasks()
+        eventProbe = { event -> if (event is FactionJoinEvent) event.isCancelled = true }
+
+        assertTrue(service.save(withArrivals(faction, arrival)) is Failure)
+        assertFalse(current(faction).isMember(arrival))
+        assertTrue(tasks.isEmpty())
+        eventProbe = {}
+        service.save(withArrivals(faction, arrival)).onFailure { throw it.reason.cause }
+        drainMainTasks(tasks)
+
+        assertEquals(listOf(UUID.fromString(arrival.value)), events.filterIsInstance<FactionMemberJoinedEvent>().map { it.playerId })
+    }
+
+    @Test
+    fun failedJoinAndSuccessfulRetryNotifyOnlyTheCommittedArrival() {
+        val faction = createFaction("FailedJoin", listOf(player()))
+        val arrival = player()
+        events.clear()
+        val tasks = queueMainTasks()
+        repository.failSave = true
+
+        assertTrue(service.save(withArrivals(faction, arrival)) is Failure)
+        assertFalse(current(faction).isMember(arrival))
+        assertTrue(tasks.isEmpty())
+        repository.failSave = false
+        service.save(withArrivals(faction, arrival)).onFailure { throw it.reason.cause }
+        drainMainTasks(tasks)
+
+        assertEquals(listOf(UUID.fromString(arrival.value)), events.filterIsInstance<FactionMemberJoinedEvent>().map { it.playerId })
+    }
+
+    @Test
+    fun uncertainRepositoryCommitDoesNotPublishAnUnacknowledgedArrival() {
+        val faction = createFaction("UncertainJoin", listOf(player()))
+        val arrival = player()
+        events.clear()
+        val tasks = queueMainTasks()
+        repository.failAfterWrite = true
+
+        assertTrue(service.save(withArrivals(faction, arrival)) is Failure)
+
+        assertTrue(requireNotNull(repository.rows[faction.id]).isMember(arrival))
+        assertFalse(current(faction).isMember(arrival))
+        assertTrue(tasks.isEmpty())
+        assertTrue(committedMembershipEvents().isEmpty())
+    }
+
+    @Test
+    fun deferredJoinRemainsAHistoricalNotificationAfterThePlayerLeavesAgain() {
+        val faction = createFaction("QuickDeparture", listOf(player()))
+        val arrival = player()
+        events.clear()
+        val tasks = queueMainTasks()
+        val joined = service.save(withArrivals(faction, arrival)).onFailure { throw it.reason.cause }
+        service.save(joined.copy(members = joined.members.filter { it.playerId != arrival }))
+            .onFailure { throw it.reason.cause }
+        eventProbe = { event ->
+            if (event is FactionMemberJoinedEvent) assertFalse(current(faction).isMember(arrival))
+        }
+
+        drainMainTasks(tasks)
+
+        assertEquals(listOf(UUID.fromString(arrival.value)), events.filterIsInstance<FactionMemberJoinedEvent>().map { it.playerId })
+    }
+
+    @Test
+    fun staleJoinSnapshotDoesNotScheduleAnArrival() {
+        val faction = createFaction("StaleJoin", listOf(player()))
+        val updated = service.save(faction.copy(description = "new version")).onFailure { throw it.reason.cause }
+        events.clear()
+        val tasks = queueMainTasks()
+
+        assertTrue(service.save(withArrivals(faction, player())) is Failure)
+
+        assertSame(updated, current(faction))
+        assertTrue(tasks.isEmpty())
+        assertTrue(committedMembershipEvents().isEmpty())
+    }
+
+    @Test
+    fun schedulerRefusalDoesNotTurnCommittedCreationOrJoinIntoAFailedSave() {
+        val scheduler = plugin.server.scheduler
+        `when`(scheduler.runTask(any(Plugin::class.java), any(Runnable::class.java)))
+            .thenThrow(IllegalStateException("plugin disabling"))
+        val founder = player()
+        val faction = createFaction("Shutdown", listOf(founder))
+        val arrival = player()
+
+        val joined = service.save(withArrivals(faction, arrival)).onFailure { throw it.reason.cause }
+
+        assertSame(joined, current(faction))
+        assertTrue(joined.isMember(arrival))
+        assertSame(joined, repository.rows[faction.id])
+        assertTrue(committedMembershipEvents().isEmpty())
+    }
+
+    @Test
+    fun atomicTransferArrivalIsDeferredUntilBothCachesHavePublished() {
+        val first = player()
+        val second = player()
+        val source = createFaction("TransferSource", listOf(first, second))
+        val destination = createFaction("TransferDestination", listOf(first))
+        events.clear()
+        val tasks = queueMainTasks()
+        eventProbe = { event ->
+            if (event is FactionMemberJoinedEvent) {
+                assertNull(service.getFaction(source.id))
+                assertNull(repository.rows[source.id])
+                assertEquals(setOf(first, second), current(destination).members.map { it.playerId }.toSet())
+                assertEquals(UUID.fromString(second.value), event.playerId)
+            }
+        }
+
+        service.transferAllMembers(source.id, destination.id, listOf(first, second))
+            .onFailure { throw it.reason.cause }
+
+        assertTrue(committedMembershipEvents().isEmpty())
+        drainMainTasks(tasks)
+        assertEquals(1, events.filterIsInstance<FactionMemberJoinedEvent>().size)
+        assertTrue(events.filterIsInstance<FactionCreatedEvent>().isEmpty())
+    }
+
+    private fun queueMainTasks(): MutableList<Runnable> {
+        val tasks = mutableListOf<Runnable>()
+        `when`(plugin.server.scheduler.runTask(any(Plugin::class.java), any(Runnable::class.java)))
+            .thenAnswer { invocation ->
+                tasks += invocation.getArgument<Runnable>(1)
+                mock(BukkitTask::class.java)
+            }
+        return tasks
+    }
+
+    private fun drainMainTasks(tasks: MutableList<Runnable>) {
+        `when`(plugin.server.isPrimaryThread).thenReturn(true)
+        val pending = tasks.toList()
+        tasks.clear()
+        pending.forEach(Runnable::run)
+    }
+
+    private fun committedMembershipEvents() = events.filter {
+        it is FactionCreatedEvent || it is FactionMemberJoinedEvent
+    }
+
+    private fun player() = MfPlayerId(UUID.randomUUID().toString())
+
+    private fun withArrivals(faction: MfFaction, player: MfPlayerId, others: List<MfPlayerId> = emptyList()) = faction.copy(
+        members = faction.members + (listOf(player) + others).map { MfFactionMember(it, faction.roles.default) }
+    )
+
+    private fun createFaction(name: String, members: List<MfPlayerId>): MfFaction =
+        service.save(unsavedFaction(name, members)).onFailure { throw it.reason.cause }
+
+    private fun unsavedFaction(name: String, members: List<MfPlayerId>): MfFaction {
         val id = MfFactionId.generate()
         val roles = MfFactionRoles.defaults(plugin, id)
         val roster = members.mapIndexed { index, playerId ->
@@ -340,16 +654,14 @@ class MfFactionMutationLifecycleTest {
                 joinedAt = index + 1L
             )
         }
-        return service.save(
-            MfFaction(
-                plugin,
-                id = id,
-                name = name,
-                roles = roles,
-                members = roster,
-                primaryOwnerId = members.firstOrNull()
-            )
-        ).onFailure { throw it.reason.cause }
+        return MfFaction(
+            plugin,
+            id = id,
+            name = name,
+            roles = roles,
+            members = roster,
+            primaryOwnerId = members.firstOrNull()
+        )
     }
 
     private fun current(faction: MfFaction): MfFaction = requireNotNull(service.getFaction(faction.id))
@@ -364,6 +676,9 @@ class MfFactionMutationLifecycleTest {
 
     private class InMemoryFactionRepository : MfFactionRepository {
         val rows = ConcurrentHashMap<MfFactionId, MfFaction>()
+        var beforeWrite: () -> Unit = {}
+        var failSave = false
+        var failAfterWrite = false
 
         @Volatile var failAtomicMutation = false
 
@@ -385,8 +700,11 @@ class MfFactionMutationLifecycleTest {
 
         @Synchronized
         override fun upsertAll(factions: List<MfFaction>): List<MfFaction> {
+            beforeWrite()
+            if (failSave) error("injected save failure")
             val persisted = factions.map(::nextVersion)
             persisted.forEach { rows[it.id] = it }
+            if (failAfterWrite) error("injected lost commit acknowledgement")
             blockedSaveId?.let { blockedId ->
                 if (persisted.any { it.id == blockedId }) {
                     blockedSaveId = null

@@ -1,10 +1,14 @@
 package com.dansplugins.factionsystem.relationship
 
 import com.dansplugins.factionsystem.MedievalFactions
+import com.dansplugins.factionsystem.api.FactionId
+import com.dansplugins.factionsystem.api.impl.FactionViewAdapter
+import com.dansplugins.factionsystem.faction.MfFaction
 import com.dansplugins.factionsystem.faction.MfFactionId
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.ALLY
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.LIEGE
 import com.dansplugins.factionsystem.relationship.MfFactionRelationshipType.VASSAL
+import com.dansplugins.factionsystem.service.Services
 import dev.forkhandles.result4k.onFailure
 import org.bukkit.Server
 import org.bukkit.plugin.PluginManager
@@ -71,6 +75,9 @@ class MfFactionHierarchyTest {
         `when`(server.pluginManager).thenReturn(mock(PluginManager::class.java))
         repository = InMemoryRelationshipRepository()
         uut = MfFactionRelationshipService(plugin, repository)
+        val services = mock(Services::class.java)
+        `when`(plugin.services).thenReturn(services)
+        `when`(services.factionRelationshipService).thenReturn(uut)
     }
 
     private fun relate(factionId: MfFactionId, targetId: MfFactionId, type: MfFactionRelationshipType) =
@@ -204,6 +211,112 @@ class MfFactionHierarchyTest {
         assertEquals(emptyList<MfFactionRelationship>(), uut.getRelationships(emperor))
         assertEquals(listOf(relationship.copy(factionId = southKing)), uut.getRelationships(southKing))
     }
+
+    private fun view(factionId: MfFactionId): FactionViewAdapter {
+        val faction = mock(MfFaction::class.java)
+        `when`(faction.id).thenReturn(factionId)
+        return FactionViewAdapter(plugin, faction)
+    }
+
+    private fun oneCrownedBranchWithRows(multiplicity: Int) {
+        repeat(multiplicity) { swearFealty(northKing, emperor) }
+        swearFealty(northCount, northKing)
+        val view = view(emperor)
+
+        assertEquals(listOf(northKing), uut.getVassals(emperor))
+        assertEquals(listOf(northKing), uut.getVassalsHoldingVassals(emperor))
+        assertEquals(listOf(FactionId(northKing.value)), view.hierarchy.vassals)
+        assertEquals(1, view.hierarchy.vassalsHoldingVassals)
+        assertFalse(view.hierarchy.hasLiege)
+
+        // Remove redundant physical rows without breaking the one logical relationship.
+        uut.getRelationships(emperor, northKing).drop(1).forEach {
+            uut.delete(it.id).onFailure { failure -> throw failure.reason.cause }
+        }
+        uut.getRelationships(northKing, emperor).drop(1).forEach {
+            uut.delete(it.id).onFailure { failure -> throw failure.reason.cause }
+        }
+        assertEquals(1, view.hierarchy.vassalsHoldingVassals)
+        assertEquals(emperor, uut.getLiege(northKing))
+    }
+
+    @Test
+    fun oneCrownedBranchDoesNotReachTheEmperorBoundary() = oneCrownedBranchWithRows(1)
+
+    @Test
+    fun twoRowsForOneCrownedBranchDoNotReachTheEmperorBoundary() = oneCrownedBranchWithRows(2)
+
+    @Test
+    fun fiveRowsForOneCrownedBranchDoNotReachTheEmperorBoundary() = oneCrownedBranchWithRows(5)
+
+    private fun twoCrownedBranchesWithRows(multiplicity: Int) {
+        repeat(multiplicity) {
+            swearFealty(northKing, emperor)
+            swearFealty(southKing, emperor)
+        }
+        swearFealty(northCount, northKing)
+        swearFealty(southCount, southKing)
+
+        val hierarchy = view(emperor).hierarchy
+        assertEquals(2, hierarchy.vassals.size)
+        assertEquals(setOf(FactionId(northKing.value), FactionId(southKing.value)), hierarchy.vassals.toSet())
+        assertEquals(2, hierarchy.vassalsHoldingVassals)
+        assertFalse(hierarchy.hasLiege)
+    }
+
+    @Test
+    fun twoDistinctCrownedBranchesReachTheEmperorBoundary() = twoCrownedBranchesWithRows(1)
+
+    @Test
+    fun duplicateRowsDoNotInflateTwoDistinctCrownedBranches() = twoCrownedBranchesWithRows(2)
+
+    private fun imperialFactionWithStaleLiege(staleFirst: Boolean, hasValidLiege: Boolean) {
+        buildTheEmpire()
+        val stale = MfFactionId.generate()
+        if (staleFirst) relate(emperor, stale, LIEGE)
+        if (hasValidLiege) swearFealty(emperor, freeFaction)
+        if (!staleFirst) relate(emperor, stale, LIEGE)
+
+        val hierarchy = view(emperor).hierarchy
+        assertEquals(2, hierarchy.vassalsHoldingVassals)
+        assertEquals(if (hasValidLiege) freeFaction else null, uut.getLiege(emperor))
+        assertEquals(hasValidLiege, hierarchy.hasLiege)
+        assertEquals(if (hasValidLiege) FactionId(freeFaction.value) else null, hierarchy.liege)
+        assertEquals(if (hasValidLiege) 1 else 0, hierarchy.depthBelowSovereign)
+    }
+
+    @Test
+    fun aStaleLiegeAloneDoesNotRemoveSovereignty() = imperialFactionWithStaleLiege(true, false)
+
+    @Test
+    fun aStaleLiegeBeforeAValidLiegeDoesNotGrantSovereignty() = imperialFactionWithStaleLiege(true, true)
+
+    @Test
+    fun aStaleLiegeAfterAValidLiegeDoesNotGrantSovereignty() = imperialFactionWithStaleLiege(false, true)
+
+    private fun removingLastBranchRow(type: MfFactionRelationshipType) {
+        buildTheEmpire()
+        val view = view(emperor)
+        assertEquals(2, view.hierarchy.vassalsHoldingVassals)
+        val row = if (type == VASSAL) {
+            uut.getRelationships(northKing, northCount).single()
+        } else {
+            uut.getRelationships(northCount, northKing).single()
+        }
+
+        uut.delete(row.id).onFailure { throw it.reason.cause }
+
+        assertEquals(1, view.hierarchy.vassalsHoldingVassals)
+        assertEquals(listOf(southKing), uut.getVassalsHoldingVassals(emperor))
+        assertFalse(view(northKing).hierarchy.hasVassals)
+        assertNull(view(northCount).hierarchy.liege)
+    }
+
+    @Test
+    fun removingTheLastChildVassalRowImmediatelyLosesACrownedBranch() = removingLastBranchRow(VASSAL)
+
+    @Test
+    fun removingTheLastChildLiegeRowImmediatelyLosesACrownedBranch() = removingLastBranchRow(LIEGE)
 
     /**
      * Nothing in the schema forbids a ring of liege rows, and a consumer asking for a depth in order

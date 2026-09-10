@@ -17,7 +17,7 @@ import java.util.UUID
  * this event existed.
  *
  * **Not fired when a faction is created.** The head going from nobody to the founder is not a change
- * of head, and [FactionCreateEvent] already reports it. Firing both would make every consumer handle
+ * of head, and [FactionCreatedEvent] already reports it. Firing both would make every consumer handle
  * the founding case twice, and the first thing each would have to do is work out which of the two it
  * was looking at.
  *

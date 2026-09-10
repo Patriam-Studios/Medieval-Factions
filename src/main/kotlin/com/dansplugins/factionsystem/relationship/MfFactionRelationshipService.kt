@@ -397,14 +397,10 @@ class MfFactionRelationshipService(private val plugin: MedievalFactions, private
 
     @JvmName("getLiegeByFactionId")
     fun getLiege(factionId: MfFactionId): MfFactionId? {
-        val liege = getRelationships(factionId, LIEGE).firstOrNull()?.targetId
-        if (liege != null) {
-            val reverseRelationships = getRelationships(liege, factionId)
-            if (reverseRelationships.any { it.type == VASSAL }) {
-                return liege
-            }
-        }
-        return null
+        // A stale one-sided row must not hide a later reciprocal relationship.
+        return getRelationships(factionId, LIEGE).firstOrNull { relationship ->
+            getRelationships(relationship.targetId, factionId).any { it.type == VASSAL }
+        }?.targetId
     }
 
     @JvmName("getVassalsByFactionId")
@@ -414,7 +410,7 @@ class MfFactionRelationshipService(private val plugin: MedievalFactions, private
                 getRelationships(relationship.targetId, factionId).any {
                     it.type == LIEGE
                 }
-            }.map(MfFactionRelationship::targetId)
+            }.map(MfFactionRelationship::targetId).distinct()
     }
 
     /**
